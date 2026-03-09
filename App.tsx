@@ -376,7 +376,7 @@ const App: React.FC = () => {
         .catch(err => console.error('Error moving spot:', err));
       return;
     }
-    if (window.innerWidth < 1024) setDrawerState('hidden');
+    if (window.innerWidth < 1024 && drawerStateRef.current !== 'hidden') setDrawerState('hidden');
     if (selectedSpotId) {
       setSelectedSpotId(null);
       mapInstance?.closePopup();
@@ -394,8 +394,11 @@ const App: React.FC = () => {
     setAddMode('form');
   }, []);
 
+  const drawerStateRef = useRef<'hidden' | 'half' | 'full'>('hidden');
+  useEffect(() => { drawerStateRef.current = drawerState; }, [drawerState]);
+
   const handleMapDragStart = useCallback(() => {
-    if (window.innerWidth < 1024) setDrawerState('hidden');
+    if (window.innerWidth < 1024 && drawerStateRef.current === 'full') setDrawerState('half');
   }, []);
 
   const handleEditSpot = async (data: Partial<Spot>, categories: CategoryType[], image: string | null) => {
@@ -1004,36 +1007,30 @@ const App: React.FC = () => {
         </AnimatePresence>
       </div>
 
-      {/* Mobile drawer backdrop — tap map area to close */}
-      {drawerState !== 'hidden' && (
-        <div
-          className="lg:hidden absolute inset-0 z-[1498] pointer-events-auto"
-          onClick={() => setDrawerState('hidden')}
-        />
-      )}
-
       <div className="lg:hidden absolute bottom-0 left-0 right-0 z-[1500] pointer-events-none">
         <motion.div
-          animate={{ y: drawerState === 'full' ? '0%' : drawerState === 'half' ? '50%' : '92%' }}
-          transition={{ type: 'spring', damping: 30, stiffness: 280 }}
+          animate={{
+            y: drawerState === 'full'
+              ? 0
+              : drawerState === 'half'
+              ? window.innerHeight * 0.94 * 0.5
+              : window.innerHeight * 0.94 - 220
+          }}
+          transition={{ type: 'spring', damping: 32, stiffness: 300 }}
           className="bg-white dark:bg-slate-900 rounded-t-[2rem] shadow-2xl h-[94vh] flex flex-col pointer-events-auto border-t border-gray-100 dark:border-slate-800"
         >
-          {/* Drag handle — the only draggable area */}
+          {/* Drag handle — tap or swipe to open/close */}
           <motion.div
             drag="y"
             dragConstraints={{ top: 0, bottom: 0 }}
-            dragElastic={0.12}
+            dragElastic={0.15}
             dragMomentum={false}
             onDragEnd={(_, info) => {
-              if (info.velocity.y < -300 || info.offset.y < -40)
-                setDrawerState(prev => prev === 'hidden' ? 'half' : 'full');
-              else if (info.velocity.y > 300 || info.offset.y > 40)
-                setDrawerState(prev => prev === 'full' ? 'half' : 'hidden');
+              if (info.velocity.y < -200 || info.offset.y < -30) setDrawerState('full');
+              else if (info.velocity.y > 200 || info.offset.y > 30) setDrawerState('hidden');
             }}
             onClick={() => {
-              if (drawerState === 'hidden') setDrawerState('half');
-              else if (drawerState === 'half') setDrawerState('full');
-              else setDrawerState('hidden');
+              setDrawerState(prev => prev === 'hidden' ? 'full' : 'hidden');
             }}
             className="h-12 w-full flex items-center justify-center shrink-0 cursor-grab active:cursor-grabbing select-none"
             style={{ touchAction: 'none' }}
@@ -1041,11 +1038,8 @@ const App: React.FC = () => {
             <div className="w-10 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full" />
           </motion.div>
 
-          {/* Content — stops drag events from propagating to the drawer */}
-          <div
-            className="flex-1 overflow-hidden relative"
-            onPointerDown={(e) => e.stopPropagation()}
-          >
+          {/* Scrollable content — touch events stay here, don't leak to handle */}
+          <div className="flex-1 min-h-0 overflow-hidden">
             {renderSidebarContent()}
           </div>
         </motion.div>
