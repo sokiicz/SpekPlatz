@@ -845,7 +845,7 @@ const App: React.FC = () => {
           <span className="text-gray-200 dark:text-slate-700 text-[10px]">·</span>
           <button onClick={() => setShowLegalModal('privacy')} className="text-[10px] text-gray-400 dark:text-slate-500 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors">Privacy</button>
           <span className="text-gray-200 dark:text-slate-700 text-[10px]">·</span>
-          <span className="text-[10px] text-gray-300 dark:text-slate-600">Made by Jan Zavadil with Claude Code · 2026</span>
+          <a href="https://resonantlabs.online" target="_blank" rel="noopener noreferrer" className="text-[10px] text-gray-300 dark:text-slate-600 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors">A ResonantLabs app · resonantlabs.online</a>
         </div>
       </div>
     );
