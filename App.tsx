@@ -86,6 +86,20 @@ const OWNED_SPOTS_KEY = 'spekplatz_owned_spots';
 const LOCAL_SAVED_KEY = 'spekplatz_local_saved';
 const DELETED_SPOTS_KEY = 'spekplatz_deleted_spots';
 
+const compressImage = (dataUrl: string, maxPx = 1200, quality = 0.75): Promise<string> =>
+  new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.src = dataUrl;
+  });
+
 const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -426,6 +440,7 @@ const App: React.FC = () => {
       localStorage.setItem(OWNED_SPOTS_KEY, JSON.stringify(newOwned));
       setShowAddModal(null);
       setAddMode('options');
+      if (window.innerWidth < 1024) setDrawerState('half');
     } catch (err) {
       console.error("Error adding spot:", err);
       setAddSpotError('Failed to save spot. Check your connection and try again.');
@@ -782,7 +797,7 @@ const App: React.FC = () => {
             const dist = userLocation ? getDistance(userLocation[0], userLocation[1], spot.lat, spot.lng) : null;
             return (
               <motion.div
-                layout key={spot.id} onClick={() => handleSpotClick(spot)}
+                key={spot.id} onClick={() => handleSpotClick(spot)}
                 whileTap={{ scale: 0.99 }}
                 className={`group bg-white dark:bg-slate-800 p-3 rounded-2xl border transition-all cursor-pointer ${isSelected ? 'ring-2 ring-emerald-500 border-transparent shadow-md z-10' : 'border-gray-100 dark:border-slate-700 hover:border-emerald-200 dark:hover:border-emerald-700/50 hover:shadow-sm'}`}
               >
@@ -1020,7 +1035,7 @@ const App: React.FC = () => {
       <AnimatePresence>
         {showAddModal && (
           <div className="fixed inset-0 z-[4000] flex items-center justify-center p-4">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => { setShowAddModal(null); setAddSpotError(''); setEditingSpot(null); }} />
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => { if (isAddingSpot) return; setShowAddModal(null); setAddSpotError(''); setEditingSpot(null); }} />
             <motion.div initial={{ scale: 0.95, opacity: 0, y: 30 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 30 }} className="relative w-full max-w-sm lg:max-w-4xl bg-white dark:bg-slate-900 rounded-2xl md:rounded-3xl shadow-2xl p-6 md:p-10 space-y-6 md:space-y-8 max-h-[95vh] overflow-y-auto no-scrollbar border border-gray-100 dark:border-slate-800">
               {addMode === 'options' ? (
                 <div className="space-y-6 max-w-sm mx-auto">
@@ -1215,7 +1230,7 @@ const SpotForm = ({ onSubmit, initialData, isSubmitting, submitError }: { onSubm
           </button>
           <input type="file" hidden ref={fileRef} accept="image/*" onChange={e => {
             const f = e.target.files?.[0];
-            if(f) { const r = new FileReader(); r.onloadend = () => setImg(r.result as string); r.readAsDataURL(f); }
+            if(f) { const r = new FileReader(); r.onloadend = () => compressImage(r.result as string).then(setImg); r.readAsDataURL(f); }
           }} />
         </div>
 
@@ -1227,7 +1242,8 @@ const SpotForm = ({ onSubmit, initialData, isSubmitting, submitError }: { onSubm
 
       <div className="lg:col-span-2 pt-2">
         {(error || submitError) && <p className="text-xs text-red-500 dark:text-red-400 text-center mb-3">{error || submitError}</p>}
-        <button disabled={isSubmitting} onClick={() => {
+        <button disabled={isSubmitting} onClick={(e) => {
+          e.stopPropagation();
           const n = (document.getElementById('f-name') as HTMLInputElement).value;
           const d = (document.getElementById('f-desc') as HTMLTextAreaElement).value;
           if(!n || cats.length === 0) {
