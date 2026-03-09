@@ -177,7 +177,7 @@ const MapController = ({
 };
 
 const App: React.FC = () => {
-  const [spots, setSpots] = useState<Spot[]>([]);
+  const [spots, setSpots] = useState<Spot[]>(PUBLIC_SPOTS);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [settings, setSettings] = useState<MapSettings>({ mode: 'streets', theme: 'light' });
   const [activeCategories, setActiveCategories] = useState<CategoryType[]>([]);
@@ -363,7 +363,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleMapClick = (lat: number, lng: number) => {
+  const handleMapClick = useCallback((lat: number, lng: number) => {
     if (movingSpotId) {
       const spotData = spots.find(s => s.id === movingSpotId);
       if (!spotData) { setMovingSpotId(null); return; }
@@ -387,12 +387,16 @@ const App: React.FC = () => {
       setAddMode('form');
       setIsPickingLocation(false);
     }
-  };
+  }, [movingSpotId, spots, selectedSpotId, isPickingLocation, mapInstance]);
 
-  const handleLongPress = (lat: number, lng: number) => {
+  const handleLongPress = useCallback((lat: number, lng: number) => {
     setShowAddModal({ lat, lng });
     setAddMode('form');
-  };
+  }, []);
+
+  const handleMapDragStart = useCallback(() => {
+    if (window.innerWidth < 1024) setDrawerState('hidden');
+  }, []);
 
   const handleEditSpot = async (data: Partial<Spot>, categories: CategoryType[], image: string | null) => {
     if (!editingSpot || !data.name || categories.length === 0) return;
@@ -884,7 +888,7 @@ const App: React.FC = () => {
             }
             attribution='&copy; <a href="https://carto.com/">CARTO</a>'
           />
-          <MapController onViewportChange={setVisibleBounds} onLocationFound={handleLocationFound} onLocationError={handleLocationError} onMapClick={handleMapClick} onLongPress={handleLongPress} onDragStart={() => { if (window.innerWidth < 1024) setDrawerState('hidden'); }} />
+          <MapController onViewportChange={setVisibleBounds} onLocationFound={handleLocationFound} onLocationError={handleLocationError} onMapClick={handleMapClick} onLongPress={handleLongPress} onDragStart={handleMapDragStart} />
           
           {userLocation && <CircleMarker center={userLocation} radius={10} pathOptions={{ fillColor: '#3b82f6', fillOpacity: 0.8, color: '#fff', weight: 4 }} />}
 
@@ -1000,35 +1004,50 @@ const App: React.FC = () => {
         </AnimatePresence>
       </div>
 
+      {/* Mobile drawer backdrop — tap map area to close */}
+      {drawerState !== 'hidden' && (
+        <div
+          className="lg:hidden absolute inset-0 z-[1498] pointer-events-auto"
+          onClick={() => setDrawerState('hidden')}
+        />
+      )}
+
       <div className="lg:hidden absolute bottom-0 left-0 right-0 z-[1500] pointer-events-none">
         <motion.div
-          drag="y"
-          dragConstraints={{ top: 0, bottom: 0 }}
-          dragElastic={0.08}
-          dragMomentum={false}
-          onDragEnd={(_, info) => {
-            if (info.offset.y < -40) setDrawerState(drawerState === 'hidden' ? 'half' : 'full');
-            else if (info.offset.y > 40) setDrawerState(drawerState === 'full' ? 'half' : 'hidden');
-          }}
           animate={{ y: drawerState === 'full' ? '0%' : drawerState === 'half' ? '50%' : '92%' }}
-          transition={{ type: 'spring', damping: 38, stiffness: 340 }}
+          transition={{ type: 'spring', damping: 30, stiffness: 280 }}
           className="bg-white dark:bg-slate-900 rounded-t-[2rem] shadow-2xl h-[94vh] flex flex-col pointer-events-auto border-t border-gray-100 dark:border-slate-800"
         >
-          <div
-            className="h-6 w-full flex items-center justify-center shrink-0 cursor-pointer"
+          {/* Drag handle — the only draggable area */}
+          <motion.div
+            drag="y"
+            dragConstraints={{ top: 0, bottom: 0 }}
+            dragElastic={0.12}
+            dragMomentum={false}
+            onDragEnd={(_, info) => {
+              if (info.velocity.y < -300 || info.offset.y < -40)
+                setDrawerState(prev => prev === 'hidden' ? 'half' : 'full');
+              else if (info.velocity.y > 300 || info.offset.y > 40)
+                setDrawerState(prev => prev === 'full' ? 'half' : 'hidden');
+            }}
             onClick={() => {
               if (drawerState === 'hidden') setDrawerState('half');
               else if (drawerState === 'half') setDrawerState('full');
               else setDrawerState('hidden');
             }}
+            className="h-12 w-full flex items-center justify-center shrink-0 cursor-grab active:cursor-grabbing select-none"
+            style={{ touchAction: 'none' }}
           >
-            <div className="w-10 h-1 bg-gray-200 dark:bg-gray-700 rounded-full" />
+            <div className="w-10 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full" />
+          </motion.div>
+
+          {/* Content — stops drag events from propagating to the drawer */}
+          <div
+            className="flex-1 overflow-hidden relative"
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            {renderSidebarContent()}
           </div>
-          {/* Tap anywhere in half-drawer to expand fully */}
-          {drawerState === 'half' && (
-            <div className="absolute inset-0 top-6 z-10" onClick={() => setDrawerState('full')} />
-          )}
-          <div className="flex-1 overflow-hidden relative">{renderSidebarContent()}</div>
         </motion.div>
       </div>
 
