@@ -137,6 +137,14 @@ const createCustomIcon = (categories: CategoryType[]) => {
   });
 };
 
+// Cache icons so createCustomIcon isn't called on every render
+const iconCache = new Map<string, L.DivIcon>();
+const getCachedIcon = (cats: CategoryType[]): L.DivIcon => {
+  const key = [...cats].sort().join(',') || 'Other';
+  if (!iconCache.has(key)) iconCache.set(key, createCustomIcon(cats));
+  return iconCache.get(key)!;
+};
+
 const MapController = ({
   onViewportChange,
   onMapClick,
@@ -184,7 +192,7 @@ const App: React.FC = () => {
   const [showAllCategories, setShowAllCategories] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [visibleBounds, setVisibleBounds] = useState<L.LatLngBounds | null>(null);
-  const [drawerState, setDrawerState] = useState<'hidden' | 'half' | 'full'>('hidden');
+  const [drawerState, setDrawerState] = useState<'hidden' | 'half' | 'full'>('half');
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [ownedSpotIds, setOwnedSpotIds] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem(OWNED_SPOTS_KEY) || '[]'); } catch { return []; }
@@ -363,42 +371,85 @@ const App: React.FC = () => {
     }
   };
 
+  // Stable refs so map callbacks never need to be re-registered
+  const spotsRef = useRef<Spot[]>(spots);
+  useEffect(() => { spotsRef.current = spots; }, [spots]);
+  const selectedSpotIdRef = useRef<string | null>(null);
+  useEffect(() => { selectedSpotIdRef.current = selectedSpotId; }, [selectedSpotId]);
+  const isPickingLocationRef = useRef(false);
+  useEffect(() => { isPickingLocationRef.current = isPickingLocation; }, [isPickingLocation]);
+  const mapInstanceRef = useRef<L.Map | null>(null);
+  useEffect(() => { mapInstanceRef.current = mapInstance; }, [mapInstance]);
+  const movingSpotIdRef = useRef<string | null>(null);
+  useEffect(() => { movingSpotIdRef.current = movingSpotId; }, [movingSpotId]);
+  const drawerStateRef = useRef<'hidden' | 'half' | 'full'>('half');
+  useEffect(() => { drawerStateRef.current = drawerState; }, [drawerState]);
+
+  // Fully stable — never re-registers Leaflet events
   const handleMapClick = useCallback((lat: number, lng: number) => {
-    if (movingSpotId) {
-      const spotData = spots.find(s => s.id === movingSpotId);
+    const moving = movingSpotIdRef.current;
+    if (moving) {
+      const spotData = spotsRef.current.find(s => s.id === moving);
       if (!spotData) { setMovingSpotId(null); return; }
       const { id: _id, ...rest } = spotData;
-      const targetId = movingSpotId;
-      // Clear banner and re-open spot immediately; write to Firestore in background
       setMovingSpotId(null);
-      setSelectedSpotId(targetId);
-      setDoc(doc(db, 'spots', targetId), { ...rest, lat, lng })
+      setSelectedSpotId(moving);
+      setDoc(doc(db, 'spots', moving), { ...rest, lat, lng })
         .catch(err => console.error('Error moving spot:', err));
       return;
     }
     if (window.innerWidth < 1024 && drawerStateRef.current !== 'hidden') setDrawerState('hidden');
-    if (selectedSpotId) {
+    if (selectedSpotIdRef.current) {
       setSelectedSpotId(null);
-      mapInstance?.closePopup();
+      mapInstanceRef.current?.closePopup();
       return;
     }
-    if (isPickingLocation) {
+    if (isPickingLocationRef.current) {
       setShowAddModal({ lat, lng });
       setAddMode('form');
       setIsPickingLocation(false);
     }
-  }, [movingSpotId, spots, selectedSpotId, isPickingLocation, mapInstance]);
+  }, []);
 
   const handleLongPress = useCallback((lat: number, lng: number) => {
     setShowAddModal({ lat, lng });
     setAddMode('form');
   }, []);
 
-  const drawerStateRef = useRef<'hidden' | 'half' | 'full'>('hidden');
-  useEffect(() => { drawerStateRef.current = drawerState; }, [drawerState]);
-
   const handleMapDragStart = useCallback(() => {
     if (window.innerWidth < 1024 && drawerStateRef.current === 'full') setDrawerState('half');
+  }, []);
+
+  // Drawer gesture detection — track inner scroll via capture-phase listener
+  const drawerContentRef = useRef<HTMLDivElement>(null);
+  const innerScrollTop = useRef(0);
+  const touchStart = useRef<{ y: number; scrollTop: number } | null>(null);
+  useEffect(() => {
+    const el = drawerContentRef.current;
+    if (!el) return;
+    const handler = (e: Event) => { innerScrollTop.current = (e.target as HTMLElement).scrollTop ?? 0; };
+    el.addEventListener('scroll', handler, { capture: true, passive: true });
+    return () => el.removeEventListener('scroll', handler, { capture: true });
+  }, []);
+
+  const handleDrawerTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStart.current = { y: e.touches[0].clientY, scrollTop: innerScrollTop.current };
+  }, []);
+
+  const handleDrawerTouchEnd = useCallback((e: React.TouchEvent) => {
+    if (!touchStart.current) return;
+    const dy = touchStart.current.y - e.changedTouches[0].clientY; // positive = swipe up
+    const startedAtTop = touchStart.current.scrollTop <= 2;
+    const stillAtTop = innerScrollTop.current <= 2;
+    touchStart.current = null;
+    if (Math.abs(dy) < 40) return;
+    if (dy > 40 && startedAtTop) {
+      // Swipe up from top → open fully
+      setDrawerState('full');
+    } else if (dy < -40 && startedAtTop && stillAtTop) {
+      // Swipe down, wasn't scrolling content → close
+      setDrawerState('hidden');
+    }
   }, []);
 
   const handleEditSpot = async (data: Partial<Spot>, categories: CategoryType[], image: string | null) => {
@@ -901,7 +952,7 @@ const App: React.FC = () => {
               <Marker
                 key={spot.id}
                 position={[spot.lat, spot.lng]}
-                icon={createCustomIcon(spot.categories)}
+                icon={getCachedIcon(spot.categories)}
                 ref={(el) => { markerRefs.current[spot.id] = el; }}
                 eventHandlers={{ click: () => handleSpotClick(spot, true) }}
               >
@@ -1016,30 +1067,33 @@ const App: React.FC = () => {
               ? window.innerHeight * 0.94 * 0.5
               : window.innerHeight * 0.94 - 220
           }}
-          transition={{ type: 'spring', damping: 32, stiffness: 300 }}
+          transition={{ type: 'spring', damping: 30, stiffness: 280 }}
           className="bg-white dark:bg-slate-900 rounded-t-[2rem] shadow-2xl h-[94vh] flex flex-col pointer-events-auto border-t border-gray-100 dark:border-slate-800"
         >
-          {/* Drag handle — tap or swipe to open/close */}
+          {/* Handle pill — drag or tap to open/close */}
           <motion.div
             drag="y"
             dragConstraints={{ top: 0, bottom: 0 }}
-            dragElastic={0.15}
+            dragElastic={0.18}
             dragMomentum={false}
             onDragEnd={(_, info) => {
-              if (info.velocity.y < -200 || info.offset.y < -30) setDrawerState('full');
-              else if (info.velocity.y > 200 || info.offset.y > 30) setDrawerState('hidden');
+              if (info.velocity.y < -150 || info.offset.y < -30) setDrawerState('full');
+              else if (info.velocity.y > 150 || info.offset.y > 30) setDrawerState('hidden');
             }}
-            onClick={() => {
-              setDrawerState(prev => prev === 'hidden' ? 'full' : 'hidden');
-            }}
+            onClick={() => setDrawerState(prev => prev === 'full' ? 'hidden' : 'full')}
             className="h-12 w-full flex items-center justify-center shrink-0 cursor-grab active:cursor-grabbing select-none"
             style={{ touchAction: 'none' }}
           >
             <div className="w-10 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full" />
           </motion.div>
 
-          {/* Scrollable content — touch events stay here, don't leak to handle */}
-          <div className="flex-1 min-h-0 overflow-hidden">
+          {/* Content — swipe anywhere to open/close; native scroll still works */}
+          <div
+            ref={drawerContentRef}
+            className="flex-1 min-h-0 overflow-hidden"
+            onTouchStart={handleDrawerTouchStart}
+            onTouchEnd={handleDrawerTouchEnd}
+          >
             {renderSidebarContent()}
           </div>
         </motion.div>
