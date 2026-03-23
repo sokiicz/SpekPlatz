@@ -42,7 +42,11 @@ import {
   ChevronDown,
   MoreHorizontal,
   Move,
-  Crosshair
+  Crosshair,
+  Eye,
+  EyeOff,
+  Sparkles,
+  Lock,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { initializeApp } from 'firebase/app';
@@ -94,6 +98,9 @@ const auth = getAuth(app);
 const OWNED_SPOTS_KEY = 'spekplatz_owned_spots';
 const LOCAL_SAVED_KEY = 'spekplatz_local_saved';
 const DELETED_SPOTS_KEY = 'spekplatz_deleted_spots';
+
+const AVATAR_SEEDS = ['maple', 'luna', 'pixel', 'nova', 'river', 'echo', 'sage', 'atlas', 'felix', 'mochi', 'zara', 'indigo'];
+const AVATAR_OPTIONS = AVATAR_SEEDS.map(s => `https://api.dicebear.com/7.x/avataaars/svg?seed=${s}`);
 
 const compressImage = (dataUrl: string, maxPx = 1200, quality = 0.75): Promise<string> =>
   new Promise(resolve => {
@@ -221,6 +228,8 @@ const App: React.FC = () => {
   const [minRating, setMinRating] = useState(0);
   const [showAuthModal, setShowAuthModal] = useState<'login' | 'signup' | null>(null);
   const [authError, setAuthError] = useState('');
+  const [showSignupPassword, setShowSignupPassword] = useState(false);
+  const [signupAvatar, setSignupAvatar] = useState(AVATAR_OPTIONS[0]);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileError, setProfileError] = useState('');
   const [profileSuccess, setProfileSuccess] = useState(false);
@@ -561,7 +570,7 @@ const App: React.FC = () => {
     try {
       if (type === 'signup') {
         const cred = await createUserWithEmailAndPassword(auth, syntheticEmail, password);
-        const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${nickname}`;
+        const avatar = signupAvatar;
         // Merge any locally saved spots into the new account
         const localSaved: string[] = (() => { try { return JSON.parse(localStorage.getItem(LOCAL_SAVED_KEY) || '[]'); } catch { return []; } })();
         await setDoc(doc(db, 'users', cred.user.uid), { name: nickname, avatar, savedSpotIds: localSaved });
@@ -569,6 +578,8 @@ const App: React.FC = () => {
         setSavedSpotIds(localSaved);
         setCurrentUser({ id: cred.user.uid, name: nickname, avatar });
         setShowAuthModal(null);
+        setShowSignupPassword(false);
+        setSignupAvatar(AVATAR_OPTIONS[0]);
       } else {
         const cred = await signInWithEmailAndPassword(auth, syntheticEmail, password);
         const userDoc = await getDoc(doc(db, 'users', cred.user.uid));
@@ -617,6 +628,14 @@ const App: React.FC = () => {
       if (['auth/wrong-password', 'auth/invalid-credential'].includes(err.code)) setProfileError('Current password is incorrect');
       else setProfileError('Failed to update password. Please try again.');
     }
+  };
+
+  const handleAvatarChange = async (avatarUrl: string) => {
+    if (!currentUser) return;
+    try {
+      await updateDoc(doc(db, 'users', currentUser.id), { avatar: avatarUrl });
+      setCurrentUser(prev => prev ? { ...prev, avatar: avatarUrl } : null);
+    } catch (err) { console.error('Failed to update avatar', err); }
   };
 
   const mainCategories = CATEGORIES.slice(0, 4);
@@ -1195,30 +1214,106 @@ const App: React.FC = () => {
 
         {showAuthModal && (
           <div className="fixed inset-0 z-[5000] flex items-center justify-center p-4">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/90 backdrop-blur-2xl" onClick={() => setShowAuthModal(null)} />
-            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl p-8 shadow-2xl text-center border border-gray-100 dark:border-slate-800">
-               <div className="w-14 h-14 bg-emerald-600 text-white rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-lg shadow-emerald-500/20">
-                 <UserIcon size={26} />
-               </div>
-               <h2 className="text-xl font-bold text-gray-900 dark:text-white mb-1">{showAuthModal === 'login' ? 'Welcome back' : 'Create account'}</h2>
-               <p className="text-xs text-gray-400 dark:text-slate-500 mb-6">{showAuthModal === 'login' ? 'Sign in to your SpekPlatz account' : 'Join the SpekPlatz community'}</p>
-               <form onSubmit={(e) => handleAuth(showAuthModal!, e)} className="space-y-3 text-left">
-                 <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Nickname</label>
-                    <input name="nickname" placeholder="Your nickname" required className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
-                 </div>
-                 <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Password</label>
-                    <input type="password" name="password" placeholder="••••••••" required className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
-                 </div>
-                 {authError && <p className="text-xs text-red-500 dark:text-red-400 text-center">{authError}</p>}
-                 <button type="submit" className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-emerald-700 transition-colors active:scale-95 mt-2">
-                   {showAuthModal === 'login' ? 'Sign in' : 'Create account'}
-                 </button>
-               </form>
-               <button onClick={() => setShowAuthModal(showAuthModal === 'login' ? 'signup' : 'login')} className="mt-4 text-xs text-emerald-600 dark:text-emerald-400 hover:underline">
-                 {showAuthModal === 'login' ? 'New here? Create account' : 'Already have one? Sign in'}
-               </button>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/90 backdrop-blur-2xl" onClick={() => { setShowAuthModal(null); setAuthError(''); setShowSignupPassword(false); }} />
+            <motion.div
+              key={showAuthModal}
+              initial={{ scale: 0.9, opacity: 0, y: 16 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 16 }}
+              className="relative w-full max-w-sm shadow-2xl rounded-3xl overflow-hidden border border-white/10"
+            >
+              {showAuthModal === 'login' ? (
+                /* ── LOGIN ── */
+                <div className="bg-slate-900 p-8">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-12 h-12 bg-blue-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/30 shrink-0">
+                      <Lock size={22} />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold text-white leading-tight">Welcome back</h2>
+                      <p className="text-xs text-slate-400">Sign in to your SpekPlatz account</p>
+                    </div>
+                  </div>
+                  <form onSubmit={(e) => handleAuth('login', e)} className="space-y-3">
+                    <input
+                      name="nickname" placeholder="Nickname" required autoComplete="username"
+                      className="w-full px-4 py-3 bg-slate-800 text-gray-100 placeholder-slate-500 rounded-xl font-medium outline-none border border-slate-700 focus:ring-2 focus:ring-blue-500 text-sm"
+                    />
+                    <input
+                      type="password" name="password" placeholder="Password" required autoComplete="current-password"
+                      className="w-full px-4 py-3 bg-slate-800 text-gray-100 placeholder-slate-500 rounded-xl font-medium outline-none border border-slate-700 focus:ring-2 focus:ring-blue-500 text-sm"
+                    />
+                    {authError && <p className="text-xs text-red-400 text-center">{authError}</p>}
+                    <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-blue-700 transition-colors active:scale-95 mt-1">
+                      Sign in
+                    </button>
+                  </form>
+                  <p className="mt-5 text-center text-xs text-slate-500">
+                    New to SpekPlatz?{' '}
+                    <button onClick={() => { setShowAuthModal('signup'); setAuthError(''); }} className="text-emerald-400 hover:underline font-medium">Create account</button>
+                  </p>
+                </div>
+              ) : (
+                /* ── SIGNUP ── */
+                <div className="bg-white dark:bg-slate-900 p-8">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="w-12 h-12 bg-emerald-500 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-500/30 shrink-0">
+                      <Sparkles size={22} />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold text-gray-900 dark:text-white leading-tight">Create account</h2>
+                      <p className="text-xs text-gray-400 dark:text-slate-500">Join the SpekPlatz community</p>
+                    </div>
+                  </div>
+                  <form onSubmit={(e) => { (e as any)._signupAvatar = signupAvatar; handleAuth('signup', e); }} className="space-y-3">
+                    <input
+                      name="nickname" placeholder="Choose a nickname" required autoComplete="username"
+                      className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm"
+                    />
+
+                    {/* Avatar picker */}
+                    <div className="space-y-2">
+                      <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Choose your avatar</label>
+                      <div className="grid grid-cols-6 gap-1.5">
+                        {AVATAR_OPTIONS.map((url) => (
+                          <button
+                            key={url} type="button" onClick={() => setSignupAvatar(url)}
+                            className={`w-full aspect-square rounded-xl overflow-hidden border-2 transition-all ${signupAvatar === url ? 'border-emerald-500 scale-105 shadow-md shadow-emerald-200 dark:shadow-emerald-900' : 'border-transparent hover:border-emerald-300 dark:hover:border-emerald-700'}`}
+                          >
+                            <img src={url} className="w-full h-full" alt="" />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Password with show/hide + browser generation */}
+                    <div className="relative">
+                      <input
+                        type={showSignupPassword ? 'text' : 'password'}
+                        name="password" placeholder="Create a password" required
+                        autoComplete="new-password" minLength={6}
+                        className="w-full px-4 py-3 pr-11 bg-gray-50 dark:bg-slate-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm"
+                      />
+                      <button
+                        type="button" onClick={() => setShowSignupPassword(v => !v)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors p-1"
+                        tabIndex={-1}
+                      >
+                        {showSignupPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </button>
+                    </div>
+
+                    {authError && <p className="text-xs text-red-500 dark:text-red-400 text-center">{authError}</p>}
+                    <button type="submit" className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-emerald-700 transition-colors active:scale-95 mt-1">
+                      Create account
+                    </button>
+                  </form>
+                  <p className="mt-5 text-center text-xs text-gray-400 dark:text-slate-500">
+                    Already have one?{' '}
+                    <button onClick={() => { setShowAuthModal('login'); setAuthError(''); setShowSignupPassword(false); }} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">Sign in</button>
+                  </p>
+                </div>
+              )}
             </motion.div>
           </div>
         )}
@@ -1230,10 +1325,25 @@ const App: React.FC = () => {
               <button onClick={() => { setShowProfileModal(false); setProfileError(''); setProfileSuccess(false); }} className="absolute top-4 right-4 p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"><X size={18} /></button>
 
               {/* Avatar + name */}
-              <div className="text-center mb-6">
+              <div className="text-center mb-5">
                 <img src={currentUser.avatar} className="w-16 h-16 mx-auto rounded-2xl mb-3 shadow-md" alt={currentUser.name} />
                 <h2 className="text-xl font-bold text-gray-900 dark:text-white">{currentUser.name}</h2>
                 <p className="text-xs text-gray-400 dark:text-slate-500 mt-0.5">SpekPlatz member</p>
+              </div>
+
+              {/* Avatar picker */}
+              <div className="mb-5">
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-slate-500 mb-2 flex items-center gap-1.5"><Sparkles size={13} /> Change avatar</p>
+                <div className="grid grid-cols-6 gap-1.5">
+                  {AVATAR_OPTIONS.map((url) => (
+                    <button
+                      key={url} type="button" onClick={() => handleAvatarChange(url)}
+                      className={`w-full aspect-square rounded-xl overflow-hidden border-2 transition-all ${currentUser.avatar === url ? 'border-emerald-500 scale-105 shadow-md shadow-emerald-200 dark:shadow-emerald-900' : 'border-transparent hover:border-emerald-300 dark:hover:border-emerald-700'}`}
+                    >
+                      <img src={url} className="w-full h-full" alt="" />
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Change password */}
