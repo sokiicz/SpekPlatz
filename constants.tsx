@@ -1,14 +1,17 @@
 
 import React from 'react';
-import { 
-  Cloud, 
-  Trees, 
-  Home, 
-  Coffee, 
-  Waves, 
-  Ghost, 
-  Telescope, 
-  MoreHorizontal 
+import {
+  Cloud,
+  Trees,
+  Home,
+  Coffee,
+  Waves,
+  Ghost,
+  Telescope,
+  Leaf,
+  Armchair,
+  Flame,
+  MoreHorizontal
 } from 'lucide-react';
 import { CategoryType } from './types';
 
@@ -20,6 +23,9 @@ export const CATEGORIES: { label: CategoryType; icon: React.ReactNode; color: st
   { label: 'Beach', icon: <Waves size={18} />, color: 'bg-cyan-500' },
   { label: 'Hidden', icon: <Ghost size={18} />, color: 'bg-gray-700' },
   { label: 'Viewpoint', icon: <Telescope size={18} />, color: 'bg-indigo-500' },
+  { label: 'Nature', icon: <Leaf size={18} />, color: 'bg-green-600' },
+  { label: 'Bench', icon: <Armchair size={18} />, color: 'bg-amber-700' },
+  { label: 'Fireplace', icon: <Flame size={18} />, color: 'bg-orange-500' },
   { label: 'Other', icon: <MoreHorizontal size={18} />, color: 'bg-slate-500' },
 ];
 

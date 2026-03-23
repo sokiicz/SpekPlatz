@@ -1,10 +1,9 @@
 
-export type CategoryType = 'Rooftop' | 'Park' | 'Balcony' | 'Lounge' | 'Beach' | 'Hidden' | 'Viewpoint' | 'Other';
+export type CategoryType = 'Rooftop' | 'Park' | 'Balcony' | 'Lounge' | 'Beach' | 'Hidden' | 'Viewpoint' | 'Nature' | 'Bench' | 'Fireplace' | 'Other';
 
 export interface User {
   id: string;
   name: string;
-  password?: string; // Stored for simple persistent auth
   avatar: string;
   email?: string;
   isAdmin?: boolean;

@@ -37,3 +37,4 @@ CONVERSATION_LOG.txt
 *.sln
 *.sw?
 *.txt
+app-meta.json

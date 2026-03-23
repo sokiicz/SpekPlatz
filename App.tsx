@@ -41,26 +41,35 @@ import {
   AlertCircle,
   ChevronDown,
   MoreHorizontal,
-  Move
+  Move,
+  Crosshair
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { initializeApp } from 'firebase/app';
-import { 
-  getFirestore, 
-  collection, 
-  addDoc, 
-  onSnapshot, 
-  doc, 
-  updateDoc, 
-  deleteDoc, 
-  query, 
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  updatePassword,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
+} from 'firebase/auth';
+import {
+  getFirestore,
+  collection,
+  addDoc,
+  onSnapshot,
+  doc,
+  updateDoc,
+  deleteDoc,
+  query,
   orderBy,
   arrayUnion,
   arrayRemove,
-  getDocs,
+  getDoc,
   setDoc,
-  where,
-  limit
 } from 'firebase/firestore';
 
 import { Spot, CategoryType, User, MapSettings, Review } from './types';
@@ -80,8 +89,8 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app, 'spekplatz');
+const auth = getAuth(app);
 
-const USER_SESSION_KEY = 'spekplatz_current_user_v4';
 const OWNED_SPOTS_KEY = 'spekplatz_owned_spots';
 const LOCAL_SAVED_KEY = 'spekplatz_local_saved';
 const DELETED_SPOTS_KEY = 'spekplatz_deleted_spots';
@@ -198,17 +207,13 @@ const App: React.FC = () => {
     try { return JSON.parse(localStorage.getItem(OWNED_SPOTS_KEY) || '[]'); } catch { return []; }
   });
   const [savedSpotIds, setSavedSpotIds] = useState<string[]>(() => {
-    try {
-      const savedUser = localStorage.getItem(USER_SESSION_KEY);
-      if (savedUser) { const u = JSON.parse(savedUser); return u.savedSpotIds || []; }
-      return JSON.parse(localStorage.getItem(LOCAL_SAVED_KEY) || '[]');
-    } catch { return []; }
+    try { return JSON.parse(localStorage.getItem(LOCAL_SAVED_KEY) || '[]'); } catch { return []; }
   });
   const [locationStatus, setLocationStatus] = useState<'idle' | 'searching' | 'found' | 'error'>('idle');
   const [showLegalModal, setShowLegalModal] = useState<'terms' | 'privacy' | null>(null);
   const markerRefs = useRef<{[key: string]: any}>({});
   const [showAddModal, setShowAddModal] = useState<{lat: number, lng: number} | null>(null);
-  const [addMode, setAddMode] = useState<'options' | 'form'>('options');
+  const [addMode, setAddMode] = useState<'options' | 'form' | 'coordinates'>('options');
   const [editingSpot, setEditingSpot] = useState<Spot | null>(null);
   const [selectedSpotId, setSelectedSpotId] = useState<string | null>(null);
   const [mapInstance, setMapInstance] = useState<L.Map | null>(null);
@@ -216,6 +221,9 @@ const App: React.FC = () => {
   const [minRating, setMinRating] = useState(0);
   const [showAuthModal, setShowAuthModal] = useState<'login' | 'signup' | null>(null);
   const [authError, setAuthError] = useState('');
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [profileSuccess, setProfileSuccess] = useState(false);
   const [isPickingLocation, setIsPickingLocation] = useState(false);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [sortBy, setSortBy] = useState<'date' | 'rating' | 'distance'>('date');
@@ -230,28 +238,39 @@ const App: React.FC = () => {
   const [movingSpotId, setMovingSpotId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  // Restore auth session via Firebase Auth — no localStorage session needed
   useEffect(() => {
-    const savedUser = localStorage.getItem(USER_SESSION_KEY);
-    if (savedUser) setCurrentUser(JSON.parse(savedUser));
-    
+    const unsubAuth = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+          if (userDoc.exists()) {
+            const data = userDoc.data();
+            setCurrentUser({ id: firebaseUser.uid, name: data.name, avatar: data.avatar });
+            setSavedSpotIds(data.savedSpotIds || []);
+          }
+        } catch (err) {
+          console.warn('Failed to load user profile', err);
+        }
+      } else {
+        setCurrentUser(null);
+      }
+    });
+    return unsubAuth;
+  }, []);
+
+  useEffect(() => {
     const q = query(collection(db, 'spots'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const dbSpots = snapshot.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data() 
-      } as Spot));
-      
+      const dbSpots = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Spot));
       // Firestore versions override public spots (allows admins to move/edit hardcoded spots)
       const merged = PUBLIC_SPOTS.map(ps => dbSpots.find(s => s.id === ps.id) || ps);
-      dbSpots.forEach(s => {
-        if (!merged.find(p => p.id === s.id)) merged.push(s);
-      });
+      dbSpots.forEach(s => { if (!merged.find(p => p.id === s.id)) merged.push(s); });
       setSpots(merged);
     }, (err) => {
       console.warn("Firestore error, showing public data.", err);
       setSpots(PUBLIC_SPOTS);
     });
-
     return () => unsubscribe();
   }, []);
 
@@ -294,24 +313,21 @@ const App: React.FC = () => {
     const newSaved = isNowSaved ? [...savedSpotIds, spotId] : savedSpotIds.filter(id => id !== spotId);
     setSavedSpotIds(newSaved);
     if (currentUser) {
-      const updatedUser = { ...currentUser, savedSpotIds: newSaved };
-      localStorage.setItem(USER_SESSION_KEY, JSON.stringify(updatedUser));
       try {
-        const q = query(collection(db, 'users'), where('name', '==', currentUser.name), limit(1));
-        const snap = await getDocs(q);
-        if (!snap.empty) {
-          await updateDoc(snap.docs[0].ref, { savedSpotIds: isNowSaved ? arrayUnion(spotId) : arrayRemove(spotId) });
-        }
+        await updateDoc(doc(db, 'users', currentUser.id), {
+          savedSpotIds: isNowSaved ? arrayUnion(spotId) : arrayRemove(spotId),
+        });
       } catch (err) { console.error('Error saving spot:', err); }
     } else {
       localStorage.setItem(LOCAL_SAVED_KEY, JSON.stringify(newSaved));
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await signOut(auth);
     setSavedSpotIds([]);
-    localStorage.removeItem(USER_SESSION_KEY);
     setCurrentUser(null);
+    setShowProfileModal(false);
   };
 
   const getAverageRating = (spot: Spot) => {
@@ -538,52 +554,68 @@ const App: React.FC = () => {
     e.preventDefault();
     setAuthError('');
     const data = new FormData(e.currentTarget as HTMLFormElement);
-    const nickname = data.get('nickname') as string;
+    const nickname = (data.get('nickname') as string).trim();
     const password = data.get('password') as string;
+    const syntheticEmail = `${nickname}@spekplatz.local`;
 
     try {
       if (type === 'signup') {
-        const userQuery = query(collection(db, 'users'), where('name', '==', nickname), limit(1));
-        const userSnap = await getDocs(userQuery);
-        if (!userSnap.empty) {
-          setAuthError('Nickname already taken');
-          return;
-        }
-        const newUser = {
-          id: Math.random().toString(36).substr(2, 9),
-          name: nickname,
-          password: password,
-          avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${nickname}`,
-          savedSpotIds: []
-        };
-        await addDoc(collection(db, 'users'), newUser);
-        setSavedSpotIds([]);
-        setCurrentUser(newUser);
-        localStorage.setItem(USER_SESSION_KEY, JSON.stringify(newUser));
+        const cred = await createUserWithEmailAndPassword(auth, syntheticEmail, password);
+        const avatar = `https://api.dicebear.com/7.x/avataaars/svg?seed=${nickname}`;
+        // Merge any locally saved spots into the new account
+        const localSaved: string[] = (() => { try { return JSON.parse(localStorage.getItem(LOCAL_SAVED_KEY) || '[]'); } catch { return []; } })();
+        await setDoc(doc(db, 'users', cred.user.uid), { name: nickname, avatar, savedSpotIds: localSaved });
+        localStorage.removeItem(LOCAL_SAVED_KEY);
+        setSavedSpotIds(localSaved);
+        setCurrentUser({ id: cred.user.uid, name: nickname, avatar });
         setShowAuthModal(null);
       } else {
-        const userQuery = query(collection(db, 'users'), where('name', '==', nickname), where('password', '==', password), limit(1));
-        const userSnap = await getDocs(userQuery);
-        if (userSnap.empty) {
-          setAuthError('Invalid nickname or password');
-          return;
-        }
-        const loggedUser = { ...userSnap.docs[0].data(), id: userSnap.docs[0].id } as User;
-        // Merge locally saved spots into the account
+        const cred = await signInWithEmailAndPassword(auth, syntheticEmail, password);
+        const userDoc = await getDoc(doc(db, 'users', cred.user.uid));
+        if (!userDoc.exists()) { setAuthError('Account not found'); return; }
+        const userData = userDoc.data();
+        // Merge locally saved spots
         const localSaved: string[] = (() => { try { return JSON.parse(localStorage.getItem(LOCAL_SAVED_KEY) || '[]'); } catch { return []; } })();
-        const userSaved: string[] = (loggedUser as any).savedSpotIds || [];
+        const userSaved: string[] = userData.savedSpotIds || [];
         const mergedSaved = Array.from(new Set([...userSaved, ...localSaved]));
         if (localSaved.length > 0) {
-          try { await updateDoc(userSnap.docs[0].ref, { savedSpotIds: mergedSaved }); localStorage.removeItem(LOCAL_SAVED_KEY); } catch {}
+          await updateDoc(doc(db, 'users', cred.user.uid), { savedSpotIds: mergedSaved });
+          localStorage.removeItem(LOCAL_SAVED_KEY);
         }
         setSavedSpotIds(mergedSaved);
-        const sessionUser = { ...loggedUser, savedSpotIds: mergedSaved };
-        setCurrentUser(loggedUser);
-        localStorage.setItem(USER_SESSION_KEY, JSON.stringify(sessionUser));
+        setCurrentUser({ id: cred.user.uid, name: userData.name, avatar: userData.avatar });
         setShowAuthModal(null);
       }
-    } catch (err) {
-      setAuthError('Authentication failed');
+    } catch (err: any) {
+      if (err.code === 'auth/email-already-in-use') setAuthError('Nickname already taken');
+      else if (['auth/user-not-found', 'auth/wrong-password', 'auth/invalid-credential'].includes(err.code)) setAuthError('Invalid nickname or password');
+      else if (err.code === 'auth/weak-password') setAuthError('Password must be at least 6 characters');
+      else setAuthError('Authentication failed. Please try again.');
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setProfileError('');
+    setProfileSuccess(false);
+    const formData = new FormData(e.currentTarget as HTMLFormElement);
+    const currentPwd = formData.get('currentPassword') as string;
+    const newPwd = formData.get('newPassword') as string;
+    const confirmPwd = formData.get('confirmPassword') as string;
+
+    if (newPwd !== confirmPwd) { setProfileError('New passwords do not match'); return; }
+    if (newPwd.length < 6) { setProfileError('Password must be at least 6 characters'); return; }
+
+    try {
+      const firebaseUser = auth.currentUser!;
+      const credential = EmailAuthProvider.credential(`${currentUser!.name}@spekplatz.local`, currentPwd);
+      await reauthenticateWithCredential(firebaseUser, credential);
+      await updatePassword(firebaseUser, newPwd);
+      setProfileSuccess(true);
+      (e.currentTarget as HTMLFormElement).reset();
+    } catch (err: any) {
+      if (['auth/wrong-password', 'auth/invalid-credential'].includes(err.code)) setProfileError('Current password is incorrect');
+      else setProfileError('Failed to update password. Please try again.');
     }
   };
 
@@ -781,8 +813,14 @@ const App: React.FC = () => {
               <button onClick={() => setSettings(s => ({ ...s, theme: s.theme === 'light' ? 'dark' : 'light' }))} className="p-2 rounded-xl bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors">
                 {settings.theme === 'light' ? <Moon size={16} className="text-gray-500" /> : <Sun size={16} className="text-amber-400" />}
               </button>
-              <button onClick={() => currentUser ? handleLogout() : setShowAuthModal('login')} className="p-2 rounded-xl bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors">
-                {currentUser ? <LogOut size={16} className="text-red-400" /> : <UserIcon size={16} className="text-gray-400 dark:text-gray-500" />}
+              <button
+                onClick={() => currentUser ? setShowProfileModal(true) : setShowAuthModal('login')}
+                className="p-2 rounded-xl bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors"
+                title={currentUser ? currentUser.name : 'Sign in'}
+              >
+                {currentUser
+                  ? <img src={currentUser.avatar} className="w-4 h-4 rounded-full" alt={currentUser.name} />
+                  : <UserIcon size={16} className="text-gray-400 dark:text-gray-500" />}
               </button>
             </div>
           </div>
@@ -1127,8 +1165,21 @@ const App: React.FC = () => {
                       </div>
                       <ChevronRight size={18} className="text-gray-300 dark:text-blue-700" />
                     </button>
+                    <button onClick={() => setAddMode('coordinates')} className="w-full p-5 bg-violet-50 dark:bg-violet-900/20 border border-violet-100 dark:border-violet-800 rounded-2xl flex items-center gap-4 hover:bg-violet-100 dark:hover:bg-violet-900/30 transition-all active:scale-95">
+                      <div className="w-11 h-11 bg-violet-600 text-white rounded-xl flex items-center justify-center"><Crosshair size={20} /></div>
+                      <div className="text-left flex-1">
+                        <p className="font-semibold text-sm text-gray-800 dark:text-violet-100">Enter coordinates</p>
+                        <p className="text-xs text-gray-500 dark:text-violet-300/60 mt-0.5">Type lat/lng manually</p>
+                      </div>
+                      <ChevronRight size={18} className="text-gray-300 dark:text-violet-700" />
+                    </button>
                   </div>
                 </div>
+              ) : addMode === 'coordinates' ? (
+                <CoordinatesForm
+                  onConfirm={(lat, lng) => { setShowAddModal({ lat, lng }); setAddMode('form'); }}
+                  onBack={() => setAddMode('options')}
+                />
               ) : (
                 <div className="space-y-6">
                   <div className="flex justify-between items-center">
@@ -1168,6 +1219,38 @@ const App: React.FC = () => {
                <button onClick={() => setShowAuthModal(showAuthModal === 'login' ? 'signup' : 'login')} className="mt-4 text-xs text-emerald-600 dark:text-emerald-400 hover:underline">
                  {showAuthModal === 'login' ? 'New here? Create account' : 'Already have one? Sign in'}
                </button>
+            </motion.div>
+          </div>
+        )}
+
+        {showProfileModal && currentUser && (
+          <div className="fixed inset-0 z-[5000] flex items-center justify-center p-4">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/90 backdrop-blur-2xl" onClick={() => { setShowProfileModal(false); setProfileError(''); setProfileSuccess(false); }} />
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl p-8 shadow-2xl border border-gray-100 dark:border-slate-800">
+              <button onClick={() => { setShowProfileModal(false); setProfileError(''); setProfileSuccess(false); }} className="absolute top-4 right-4 p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"><X size={18} /></button>
+
+              {/* Avatar + name */}
+              <div className="text-center mb-6">
+                <img src={currentUser.avatar} className="w-16 h-16 mx-auto rounded-2xl mb-3 shadow-md" alt={currentUser.name} />
+                <h2 className="text-xl font-bold text-gray-900 dark:text-white">{currentUser.name}</h2>
+                <p className="text-xs text-gray-400 dark:text-slate-500 mt-0.5">SpekPlatz member</p>
+              </div>
+
+              {/* Change password */}
+              <form onSubmit={handleChangePassword} className="space-y-3">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-slate-500 mb-3 flex items-center gap-1.5"><ShieldCheck size={13} /> Change Password</h3>
+                <input type="password" name="currentPassword" placeholder="Current password" required className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
+                <input type="password" name="newPassword" placeholder="New password" required className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
+                <input type="password" name="confirmPassword" placeholder="Confirm new password" required className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
+                {profileError && <p className="text-xs text-red-500 dark:text-red-400">{profileError}</p>}
+                {profileSuccess && <p className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><CheckCircle2 size={12} /> Password updated successfully</p>}
+                <button type="submit" className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-emerald-700 transition-colors active:scale-95">Update password</button>
+              </form>
+
+              {/* Sign out */}
+              <button onClick={handleLogout} className="w-full mt-3 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors border border-red-100 dark:border-red-900/40">
+                <LogOut size={15} /> Sign out
+              </button>
             </motion.div>
           </div>
         )}
@@ -1251,6 +1334,56 @@ const App: React.FC = () => {
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+};
+
+const CoordinatesForm = ({ onConfirm, onBack }: { onConfirm: (lat: number, lng: number) => void; onBack: () => void }) => {
+  const [latVal, setLatVal] = useState('');
+  const [lngVal, setLngVal] = useState('');
+  const [error, setError] = useState('');
+
+  const handleSubmit = () => {
+    const lat = parseFloat(latVal.replace(',', '.').trim());
+    const lng = parseFloat(lngVal.replace(',', '.').trim());
+    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      setError('Enter valid coordinates (lat −90…90, lng −180…180).');
+      return;
+    }
+    onConfirm(lat, lng);
+  };
+
+  return (
+    <div className="space-y-6 max-w-sm mx-auto">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-bold text-gray-900 dark:text-white">Enter Coordinates</h2>
+        <button onClick={onBack} className="p-2 bg-gray-100 dark:bg-slate-800 rounded-xl text-gray-400 hover:text-violet-500 dark:hover:text-violet-400 transition-colors"><ArrowLeft size={18} /></button>
+      </div>
+      <p className="text-xs text-gray-400 dark:text-slate-500">Paste coordinates in decimal format, e.g. <span className="font-mono">49.1950, 16.6068</span></p>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Latitude</label>
+          <input
+            value={latVal}
+            onChange={e => { setLatVal(e.target.value); setError(''); }}
+            placeholder="49.1950"
+            className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl outline-none font-mono text-sm border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-violet-500"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Longitude</label>
+          <input
+            value={lngVal}
+            onChange={e => { setLngVal(e.target.value); setError(''); }}
+            placeholder="16.6068"
+            className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl outline-none font-mono text-sm border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-violet-500"
+          />
+        </div>
+      </div>
+      {error && <p className="text-xs text-red-500 dark:text-red-400 text-center">{error}</p>}
+      <button onClick={handleSubmit} className="w-full py-4 bg-violet-600 text-white rounded-2xl font-semibold text-sm hover:bg-violet-700 active:scale-95 transition-all">
+        Continue
+      </button>
     </div>
   );
 };
