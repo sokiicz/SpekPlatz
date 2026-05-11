@@ -235,6 +235,7 @@ const App: React.FC = () => {
   const [profileError, setProfileError] = useState('');
   const [profileSuccess, setProfileSuccess] = useState(false);
   const [isPickingLocation, setIsPickingLocation] = useState(false);
+  const [showMapMenu, setShowMapMenu] = useState(false);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [sortBy, setSortBy] = useState<'date' | 'rating' | 'distance'>('date');
   const [reviewText, setReviewText] = useState('');
@@ -992,13 +993,23 @@ const App: React.FC = () => {
       <div className="flex-1 relative h-full min-h-0">
         <MapContainer center={INITIAL_CENTER} zoom={INITIAL_ZOOM} scrollWheelZoom={true} ref={setMapInstance} style={{ height: '100%', width: '100%' }} zoomControl={false}>
           <TileLayer
-            url={settings.mode === 'satellite'
-              ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-              : (settings.theme === 'dark'
-                  ? 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png'
-                  : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png')
+            key={settings.mode + settings.theme}
+            url={
+              settings.mode === 'satellite'
+                ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                : settings.mode === 'outdoor'
+                ? `https://api.mapy.com/v1/maptiles/outdoor/256/{z}/{x}/{y}?apikey=${import.meta.env.VITE_MAPY_KEY}`
+                : settings.theme === 'dark'
+                ? 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png'
+                : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
             }
-            attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+            attribution={
+              settings.mode === 'outdoor'
+                ? '&copy; <a href="https://mapy.com/" target="_blank" rel="noopener">Mapy.com</a>'
+                : settings.mode === 'satellite'
+                ? 'Tiles &copy; Esri'
+                : '&copy; <a href="https://carto.com/">CARTO</a>'
+            }
           />
           <MapController onViewportChange={setVisibleBounds} onLocationFound={handleLocationFound} onLocationError={handleLocationError} onMapClick={handleMapClick} onLongPress={handleLongPress} onDragStart={handleMapDragStart} />
           
@@ -1065,10 +1076,30 @@ const App: React.FC = () => {
         </MapContainer>
 
         <div className="absolute top-5 right-5 z-[1000] flex flex-col gap-2">
-          <button
-            onClick={() => setSettings(s => ({ ...s, mode: s.mode === 'streets' ? 'satellite' : 'streets' }))}
-            className={`w-10 h-10 rounded-xl shadow-md flex items-center justify-center transition-all active:scale-90 border ${settings.mode === 'satellite' ? 'bg-emerald-500 border-emerald-400/50 text-white shadow-emerald-500/20' : 'bg-white/90 dark:bg-slate-800/90 border-gray-200/60 dark:border-slate-700/60 text-gray-500 dark:text-gray-400 backdrop-blur-sm'}`}
-          ><Layers size={17} /></button>
+          <div className="relative">
+            <button
+              onClick={() => setShowMapMenu(v => !v)}
+              className={`w-10 h-10 rounded-xl shadow-md flex items-center justify-center transition-all active:scale-90 border ${settings.mode !== 'streets' ? 'bg-emerald-500 border-emerald-400/50 text-white shadow-emerald-500/20' : 'bg-white/90 dark:bg-slate-800/90 border-gray-200/60 dark:border-slate-700/60 text-gray-500 dark:text-gray-400 backdrop-blur-sm'}`}
+            ><Layers size={17} /></button>
+            {showMapMenu && (
+              <>
+                <div className="fixed inset-0 z-[1000]" onClick={() => setShowMapMenu(false)} />
+                <div className="absolute right-12 top-0 z-[1001] bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-gray-200/60 dark:border-slate-700/60 py-1 min-w-[160px] backdrop-blur-sm">
+                  {([
+                    { id: 'streets', label: 'Streets' },
+                    { id: 'outdoor', label: 'Tourist' },
+                    { id: 'satellite', label: 'Satellite' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.id}
+                      onClick={() => { setSettings(s => ({ ...s, mode: opt.id })); setShowMapMenu(false); }}
+                      className={`w-full text-left px-4 py-2 text-xs font-medium transition-colors ${settings.mode === opt.id ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-700/50'}`}
+                    >{opt.label}</button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <button
             onClick={() => { setLocationDenied(false); setSelectedSpotId(null); mapInstance?.closePopup(); setLocationStatus('searching'); mapInstance?.locate({ setView: true, maxZoom: 16 }); }}
             className={`w-10 h-10 rounded-xl shadow-md flex items-center justify-center transition-all active:scale-90 border ${locationDenied ? 'bg-red-500 border-red-400/50 text-white shadow-red-500/20' : 'bg-white/90 dark:bg-slate-800/90 border-gray-200/60 dark:border-slate-700/60 text-emerald-500 dark:text-emerald-400 backdrop-blur-sm'}`}
@@ -1078,6 +1109,15 @@ const App: React.FC = () => {
             className="w-10 h-10 bg-emerald-500 text-white rounded-xl shadow-md shadow-emerald-500/25 flex items-center justify-center active:scale-90 transition-all border border-emerald-400/40"
           ><Plus size={19} strokeWidth={2.5} /></button>
         </div>
+
+        {settings.mode === 'outdoor' && (
+          <a
+            href="https://mapy.com/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="absolute bottom-2 left-2 z-[1000] bg-white/90 dark:bg-slate-800/90 rounded-md px-2 py-1 shadow-md backdrop-blur-sm text-[10px] font-semibold text-gray-700 dark:text-gray-200 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+          >Mapy.com</a>
+        )}
 
         {isPickingLocation && (
           <div className="absolute top-10 left-0 right-0 z-[2000] flex justify-center px-4 pointer-events-none">

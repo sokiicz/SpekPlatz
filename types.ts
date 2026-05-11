@@ -34,6 +34,6 @@ export interface Spot {
 }
 
 export interface MapSettings {
-  mode: 'streets' | 'satellite';
+  mode: 'streets' | 'satellite' | 'outdoor';
   theme: 'light' | 'dark';
 }
