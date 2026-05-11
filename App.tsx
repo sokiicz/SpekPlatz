@@ -134,6 +134,7 @@ const createCustomIcon = (categories: CategoryType[]) => {
   const hexMap: Record<string, string> = {
     'blue': '#3b82f6', 'emerald': '#10b981', 'orange': '#f97316', 'purple': '#a855f7',
     'cyan': '#06b6d4', 'gray': '#374151', 'indigo': '#6366f1', 'slate': '#64748b',
+    'sky': '#0ea5e9',
   };
   const colorName = cat.color.replace('bg-', '').replace('-500', '');
   const hex = hexMap[colorName] || '#10b981';

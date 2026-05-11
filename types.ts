@@ -1,5 +1,5 @@
 
-export type CategoryType = 'Rooftop' | 'Park' | 'Balcony' | 'Lounge' | 'Beach' | 'Hidden' | 'Viewpoint' | 'Nature' | 'Bench' | 'Fireplace' | 'Other';
+export type CategoryType = 'Rooftop' | 'Park' | 'Balcony' | 'Lounge' | 'Beach' | 'Swim' | 'Hidden' | 'Viewpoint' | 'Nature' | 'Bench' | 'Fireplace' | 'Other';
 
 export interface User {
   id: string;
