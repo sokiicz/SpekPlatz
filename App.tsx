@@ -962,7 +962,7 @@ const App: React.FC = () => {
           <span className="text-gray-200 dark:text-slate-700 text-[10px]">·</span>
           <button onClick={() => setShowLegalModal('privacy')} className="text-[10px] text-gray-400 dark:text-slate-500 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors">Privacy</button>
           <span className="text-gray-200 dark:text-slate-700 text-[10px]">·</span>
-          <a href="https://buymeacoffee.com/sokii" target="_blank" rel="noopener noreferrer" className="text-[10px] text-amber-500 dark:text-amber-400 hover:text-amber-600 dark:hover:text-amber-300 transition-colors">☕ Buy me a coffee</a>
+          <a href="https://buymeacoffee.com/sokii?utm_source=spekplatz&utm_medium=sidebar&utm_campaign=support" target="_blank" rel="noopener noreferrer" className="text-[10px] text-amber-500 dark:text-amber-400 hover:text-amber-600 dark:hover:text-amber-300 transition-colors">☕ Buy me a coffee</a>
           <span className="text-gray-200 dark:text-slate-700 text-[10px]">·</span>
           <a href="https://resonantlabs.online" target="_blank" rel="noopener noreferrer" className="text-[10px] text-gray-300 dark:text-slate-600 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors">A ResonantLabs app · resonantlabs.online</a>
         </div>
