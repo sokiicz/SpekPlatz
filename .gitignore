@@ -38,3 +38,13 @@ CONVERSATION_LOG.txt
 *.sw?
 *.txt
 app-meta.json
+
+# Internal agent files — never in the public repo (workspace rule N2)
+CLAUDE.md
+AGENTS.md
+STAV.md
+PROJEKT.md
+.mcp.json
+*.pem
+.env.*
+!.env.example
