@@ -1,8 +1,124 @@
 rules_version = '2';
+
+// Spekplatz (named database `spekplatz`).
+// Identity comes from Firebase Auth: nickname accounts use the synthetic email
+// `<nickname>@spekplatz.local`; visitors without an account get an anonymous
+// session (when the Anonymous provider is enabled in the console).
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if true;
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function email() {
+      return signedIn() ? request.auth.token.get('email', '') : '';
+    }
+
+    function isAdmin() {
+      return email() == 'admin@spekplatz.local';
+    }
+
+    function boundedString(v, min, max) {
+      return v is string && v.size() >= min && v.size() <= max;
+    }
+
+    // Photos are JPEG data URLs, compressed in the browser.
+    function validImage(d, max) {
+      return !('image' in d) || d.image == null || (d.image is string && d.image.size() <= max);
+    }
+
+    function validSpot(d) {
+      return boundedString(d.name, 1, 80)
+        && d.description is string && d.description.size() <= 2000
+        && d.categories is list && d.categories.size() >= 1 && d.categories.size() <= 12
+        && d.lat is number && d.lat >= -90 && d.lat <= 90
+        && d.lng is number && d.lng >= -180 && d.lng <= 180
+        && d.reviews is list
+        && validImage(d, 700000);
+    }
+
+    function validReview(r) {
+      return r is map
+        && r.keys().hasAll(['id', 'userId', 'userName', 'rating', 'comment', 'date'])
+        && r.keys().hasOnly(['id', 'userId', 'userName', 'rating', 'comment', 'date', 'image'])
+        && boundedString(r.id, 1, 40)
+        && boundedString(r.userName, 1, 40)
+        && boundedString(r.comment, 1, 1000)
+        && r.rating is int && r.rating >= 1 && r.rating <= 5
+        && boundedString(r.date, 10, 40)
+        && (signedIn() ? r.userId == request.auth.uid : r.userId == 'anon')
+        && validImage(r, 450000);
+    }
+
+    function isSpotOwner() {
+      return signedIn() && resource.data.createdBy == request.auth.uid;
+    }
+
+    // Anyone may append exactly one valid review, and set the cover photo if the spot has none.
+    function isReviewAppend() {
+      let before = resource.data.reviews;
+      let after = request.resource.data.reviews;
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return (
+          changed.hasOnly(['reviews'])
+          || (changed.hasOnly(['reviews', 'image'])
+              && resource.data.get('image', null) == null
+              && validImage(request.resource.data, 700000))
+        )
+        && after is list
+        && after.size() == before.size() + 1
+        && after.hasAll(before)
+        && validReview(after[after.size() - 1]);
+    }
+
+    match /spots/{spotId} {
+      allow read: if true;
+
+      allow create: if isAdmin() || (
+        validSpot(request.resource.data)
+        && request.resource.data.keys().hasOnly(['name', 'description', 'categories', 'image', 'lat', 'lng', 'createdBy', 'createdAt', 'reviews', 'isSaved'])
+        && request.resource.data.reviews.size() == 0
+        && boundedString(request.resource.data.createdAt, 10, 40)
+        && (signedIn()
+            ? request.resource.data.createdBy == request.auth.uid
+            : request.resource.data.createdBy is string && request.resource.data.createdBy.matches('anon-[a-z0-9]{1,12}'))
+      );
+
+      allow update: if isAdmin()
+        || (isSpotOwner()
+            && validSpot(request.resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'description', 'categories', 'image', 'lat', 'lng']))
+        || isReviewAppend();
+
+      allow delete: if isAdmin() || isSpotOwner();
+    }
+
+    function validAvatar(a) {
+      return a is string && a.size() <= 200 && a.matches('https://api[.]dicebear[.]com/.*');
+    }
+
+    function validSaved(s) {
+      return s is list && s.size() <= 1000;
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+
+      // The profile name must match the nickname the account was created with.
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['name', 'avatar', 'savedSpotIds'])
+        && boundedString(request.resource.data.name, 3, 30)
+        && request.resource.data.name.lower() + '@spekplatz.local' == email()
+        && validAvatar(request.resource.data.avatar)
+        && validSaved(request.resource.data.savedSpotIds);
+
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['avatar', 'savedSpotIds'])
+        && validAvatar(request.resource.data.avatar)
+        && validSaved(request.resource.data.get('savedSpotIds', []));
+
+      allow delete: if signedIn() && request.auth.uid == uid;
     }
   }
 }

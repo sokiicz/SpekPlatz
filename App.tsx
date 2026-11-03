@@ -1,10 +1,10 @@
-
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { 
-  MapContainer, 
-  TileLayer, 
-  Marker, 
-  Popup, 
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  useMap,
   useMapEvents,
   CircleMarker
 } from 'react-leaflet';
@@ -30,14 +30,12 @@ import {
   Navigation2,
   MessageSquare,
   Send,
-  Clock,
   Ghost,
   Layers,
   LocateFixed,
   ChevronRight,
   ShieldCheck,
   CheckCircle2,
-  Target,
   AlertCircle,
   ChevronDown,
   MoreHorizontal,
@@ -49,19 +47,19 @@ import {
   Lock,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { initializeApp } from 'firebase/app';
 import {
-  getAuth,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  signInAnonymously,
+  linkWithCredential,
   signOut,
   onAuthStateChanged,
   updatePassword,
+  deleteUser,
   EmailAuthProvider,
   reauthenticateWithCredential,
 } from 'firebase/auth';
 import {
-  getFirestore,
   collection,
   addDoc,
   onSnapshot,
@@ -75,69 +73,52 @@ import {
   getDoc,
   setDoc,
 } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
 
 import { Spot, CategoryType, User, MapSettings, Review } from './types';
 import { CATEGORIES, INITIAL_CENTER, INITIAL_ZOOM } from './constants';
 import { PUBLIC_SPOTS } from './publicData';
 import { formatDistanceToNow } from 'date-fns';
+import { auth, db, isAdminName, nicknameToEmail, NICKNAME_PATTERN } from './lib/firebase';
+import { getTileSource, hasMapyKey } from './lib/tiles';
+import {
+  REVIEW_IMAGE,
+  compressImageFile,
+  formatDistance,
+  getAverageRating,
+  getDistance,
+  randomId,
+  readJson,
+  reviewAvatar,
+  safeImageSrc,
+} from './lib/utils';
+import SpotForm, { SpotFormData } from './components/SpotForm';
+import CoordinatesForm from './components/CoordinatesForm';
+import LegalModal, { LegalTab } from './components/LegalModal';
 
-// --- FIREBASE INITIALIZATION ---
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-};
-
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app, 'spekplatz');
-const auth = getAuth(app);
-
-const OWNED_SPOTS_KEY = 'spekplatz_owned_spots';
 const LOCAL_SAVED_KEY = 'spekplatz_local_saved';
-const DELETED_SPOTS_KEY = 'spekplatz_deleted_spots';
+const THEME_KEY = 'spekplatz_theme';
+const REVIEW_MAX = 1000;
+const NAME_MAX = 40;
 
 const AVATAR_SEEDS = ['maple', 'luna', 'pixel', 'nova', 'river', 'echo', 'sage', 'atlas', 'felix', 'mochi', 'zara', 'indigo'];
 const AVATAR_OPTIONS = AVATAR_SEEDS.map(s => `https://api.dicebear.com/7.x/avataaars/svg?seed=${s}`);
 
-const compressImage = (dataUrl: string, maxPx = 1200, quality = 0.75): Promise<string> =>
-  new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => {
-      const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(img.width * scale);
-      canvas.height = Math.round(img.height * scale);
-      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/jpeg', quality));
-    };
-    img.src = dataUrl;
-  });
+const errorCode = (err: unknown) => err instanceof FirebaseError ? err.code : '';
 
-const getDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = 
-    Math.sin(dLat/2) * Math.sin(dLat/2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-    Math.sin(dLon/2) * Math.sin(dLon/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c; 
+const writeLocal = (key: string, value: unknown) => {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage full or blocked */ }
 };
 
 const createCustomIcon = (categories: CategoryType[]) => {
   const primaryCat = categories[0] || 'Other';
   const cat = CATEGORIES.find(c => c.label === primaryCat) || CATEGORIES[CATEGORIES.length - 1];
   const hexMap: Record<string, string> = {
-    'blue': '#3b82f6', 'emerald': '#10b981', 'orange': '#f97316', 'purple': '#a855f7',
-    'cyan': '#06b6d4', 'gray': '#374151', 'indigo': '#6366f1', 'slate': '#64748b',
-    'sky': '#0ea5e9',
+    'bg-blue-500': '#3b82f6', 'bg-emerald-500': '#10b981', 'bg-orange-500': '#f97316', 'bg-purple-500': '#a855f7',
+    'bg-cyan-500': '#06b6d4', 'bg-gray-700': '#374151', 'bg-indigo-500': '#6366f1', 'bg-slate-500': '#64748b',
+    'bg-sky-500': '#0ea5e9', 'bg-green-600': '#16a34a', 'bg-amber-700': '#b45309',
   };
-  const colorName = cat.color.replace('bg-', '').replace('-500', '');
-  const hex = hexMap[colorName] || '#10b981';
+  const hex = hexMap[cat.color] || '#10b981';
 
   return L.divIcon({
     className: 'custom-marker',
@@ -177,49 +158,103 @@ const MapController = ({
   onLongPress: (lat: number, lng: number) => void;
   onDragStart: () => void;
 }) => {
-  const timerRef = useRef<number | null>(null);
-  const cancel = () => { if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; } };
+  const map = useMap();
+  const longPressRef = useRef(onLongPress);
+  longPressRef.current = onLongPress;
+  const lastLongPressAt = useRef(0);
+
+  const fireLongPress = useCallback((lat: number, lng: number) => {
+    // Android fires both our touch timer and a native contextmenu — handle once.
+    if (Date.now() - lastLongPressAt.current < 800) return;
+    lastLongPressAt.current = Date.now();
+    longPressRef.current(lat, lng);
+  }, []);
 
   useMapEvents({
     moveend: (e) => onViewportChange(e.target.getBounds()),
-    zoomend: (e) => onViewportChange(e.target.getBounds()),
     click: (e) => onMapClick(e.latlng.lat, e.latlng.lng),
     dragstart: () => onDragStart(),
     locationfound: (e) => onLocationFound(e.latlng.lat, e.latlng.lng),
     locationerror: () => onLocationError(),
-    // Long press: touch only (mobile). Cancelled on move to avoid triggering during drag.
-    touchstart: (e) => {
-      cancel();
-      timerRef.current = window.setTimeout(() => {
-        // @ts-ignore
-        if (e.latlng) onLongPress(e.latlng.lat, e.latlng.lng);
-      }, 700);
-    },
-    touchmove: cancel,
-    touchend: cancel,
+    // Right click on desktop, long press on Android.
+    contextmenu: (e) => fireLongPress(e.latlng.lat, e.latlng.lng),
   });
+
+  // Leaflet has no touch long-press event (iOS fires no contextmenu), so track it on the container.
+  useEffect(() => {
+    const el = map.getContainer();
+    let timer: number | null = null;
+    let start: { x: number; y: number } | null = null;
+    const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } start = null; };
+    const onStart = (e: TouchEvent) => {
+      cancel();
+      if (e.touches.length !== 1) return;
+      const t = e.touches[0];
+      start = { x: t.clientX, y: t.clientY };
+      timer = window.setTimeout(() => {
+        if (!start) return;
+        const rect = el.getBoundingClientRect();
+        const latlng = map.containerPointToLatLng([start.x - rect.left, start.y - rect.top]);
+        cancel();
+        fireLongPress(latlng.lat, latlng.lng);
+      }, 650);
+    };
+    const onMove = (e: TouchEvent) => {
+      const t = e.touches[0];
+      if (start && t && Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) cancel();
+    };
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchmove', onMove, { passive: true });
+    el.addEventListener('touchend', cancel);
+    el.addEventListener('touchcancel', cancel);
+    return () => {
+      cancel();
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchmove', onMove);
+      el.removeEventListener('touchend', cancel);
+      el.removeEventListener('touchcancel', cancel);
+    };
+  }, [map, fireLongPress]);
+
   return null;
 };
+
+const Toast = ({ toast, onClose }: { toast: { message: string; kind: 'error' | 'success' }; onClose: () => void }) => (
+  <motion.div
+    initial={{ opacity: 0, y: 16 }}
+    animate={{ opacity: 1, y: 0 }}
+    exit={{ opacity: 0, y: 16 }}
+    role={toast.kind === 'error' ? 'alert' : 'status'}
+    className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-[9500] px-4 py-2.5 rounded-full shadow-xl text-white text-xs font-semibold flex items-center gap-2 max-w-[90vw] ${toast.kind === 'error' ? 'bg-red-500' : 'bg-emerald-600'}`}
+  >
+    {toast.kind === 'error' ? <AlertCircle size={14} /> : <CheckCircle2 size={14} />}
+    <span>{toast.message}</span>
+    <button onClick={onClose} aria-label="Dismiss" className="ml-1 p-0.5 rounded-full hover:bg-white/20"><X size={12} /></button>
+  </motion.div>
+);
 
 const App: React.FC = () => {
   const [spots, setSpots] = useState<Spot[]>(PUBLIC_SPOTS);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [settings, setSettings] = useState<MapSettings>({ mode: 'streets', theme: 'light' });
+  // Firebase uid of whoever is signed in, including anonymous sessions — the server-side owner id.
+  const [authUid, setAuthUid] = useState<string | null>(null);
+  const [settings, setSettings] = useState<MapSettings>(() => ({
+    mode: 'streets',
+    theme: readJson<'light' | 'dark' | null>(THEME_KEY, null)
+      ?? (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
+  }));
+  const [toast, setToast] = useState<{ message: string; kind: 'error' | 'success' } | null>(null);
+  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
   const [activeCategories, setActiveCategories] = useState<CategoryType[]>([]);
   const [showAllCategories, setShowAllCategories] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [visibleBounds, setVisibleBounds] = useState<L.LatLngBounds | null>(null);
   const [drawerState, setDrawerState] = useState<'hidden' | 'half' | 'full'>('half');
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
-  const [ownedSpotIds, setOwnedSpotIds] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem(OWNED_SPOTS_KEY) || '[]'); } catch { return []; }
-  });
-  const [savedSpotIds, setSavedSpotIds] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem(LOCAL_SAVED_KEY) || '[]'); } catch { return []; }
-  });
+  const [savedSpotIds, setSavedSpotIds] = useState<string[]>(() => readJson<string[]>(LOCAL_SAVED_KEY, []));
   const [locationStatus, setLocationStatus] = useState<'idle' | 'searching' | 'found' | 'error'>('idle');
-  const [showLegalModal, setShowLegalModal] = useState<'terms' | 'privacy' | null>(null);
-  const markerRefs = useRef<{[key: string]: any}>({});
+  const [showLegalModal, setShowLegalModal] = useState<LegalTab | null>(null);
+  const markerRefs = useRef<{ [key: string]: L.Marker | null }>({});
   const [showAddModal, setShowAddModal] = useState<{lat: number, lng: number} | null>(null);
   const [addMode, setAddMode] = useState<'options' | 'form' | 'coordinates'>('options');
   const [editingSpot, setEditingSpot] = useState<Spot | null>(null);
@@ -231,7 +266,9 @@ const App: React.FC = () => {
   const [authError, setAuthError] = useState('');
   const [showSignupPassword, setShowSignupPassword] = useState(false);
   const [signupAvatar, setSignupAvatar] = useState(AVATAR_OPTIONS[0]);
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [confirmDeleteAccount, setConfirmDeleteAccount] = useState(false);
   const [profileError, setProfileError] = useState('');
   const [profileSuccess, setProfileSuccess] = useState(false);
   const [isPickingLocation, setIsPickingLocation] = useState(false);
@@ -245,29 +282,51 @@ const App: React.FC = () => {
   const [addSpotError, setAddSpotError] = useState('');
   const [locationDenied, setLocationDenied] = useState(false);
   const [reviewImage, setReviewImage] = useState<string | null>(null);
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const reviewImageRef = useRef<HTMLInputElement>(null);
   const [movingSpotId, setMovingSpotId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
-  // Restore auth session via Firebase Auth — no localStorage session needed
+  const toastTimer = useRef<number | null>(null);
+  const notify = useCallback((message: string, kind: 'error' | 'success' = 'error') => {
+    setToast({ message, kind });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 4500);
+  }, []);
+
+  // Restore auth session via Firebase Auth. Visitors without an account get an
+  // anonymous Firebase session so the server can tell who owns which spot.
+  // If the Anonymous provider is disabled in the console, they stay signed out.
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        try {
-          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-          if (userDoc.exists()) {
-            const data = userDoc.data();
-            setCurrentUser({ id: firebaseUser.uid, name: data.name, avatar: data.avatar });
-            setSavedSpotIds(data.savedSpotIds || []);
-          }
-        } catch (err) {
-          console.warn('Failed to load user profile', err);
-        }
-      } else {
+      setAuthUid(firebaseUser?.uid ?? null);
+      if (!firebaseUser) {
         setCurrentUser(null);
+        signInAnonymously(auth).catch(err => console.info('Anonymous session unavailable:', errorCode(err)));
+        return;
+      }
+      if (firebaseUser.isAnonymous) {
+        setCurrentUser(null);
+        return;
+      }
+      try {
+        const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+        if (userDoc.exists()) {
+          const data = userDoc.data();
+          setCurrentUser({ id: firebaseUser.uid, name: data.name, avatar: data.avatar });
+          setSavedSpotIds(data.savedSpotIds || []);
+        }
+      } catch (err) {
+        console.warn('Failed to load user profile', err);
       }
     });
     return unsubAuth;
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => setViewportHeight(window.innerHeight);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   }, []);
 
   useEffect(() => {
@@ -287,6 +346,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', settings.theme === 'dark');
+    writeLocal(THEME_KEY, settings.theme);
   }, [settings.theme]);
 
   useEffect(() => {
@@ -328,9 +388,13 @@ const App: React.FC = () => {
         await updateDoc(doc(db, 'users', currentUser.id), {
           savedSpotIds: isNowSaved ? arrayUnion(spotId) : arrayRemove(spotId),
         });
-      } catch (err) { console.error('Error saving spot:', err); }
+      } catch (err) {
+        console.error('Error saving spot:', err);
+        setSavedSpotIds(savedSpotIds);
+        notify('Could not update your saved spots. Try again.');
+      }
     } else {
-      localStorage.setItem(LOCAL_SAVED_KEY, JSON.stringify(newSaved));
+      writeLocal(LOCAL_SAVED_KEY, newSaved);
     }
   };
 
@@ -339,38 +403,29 @@ const App: React.FC = () => {
     setSavedSpotIds([]);
     setCurrentUser(null);
     setShowProfileModal(false);
+    setConfirmDeleteAccount(false);
   };
 
-  const getAverageRating = (spot: Spot) => {
-    if (!spot.reviews || !spot.reviews.length) return 0;
-    return spot.reviews.reduce((acc, r) => acc + r.rating, 0) / spot.reviews.length;
-  };
+  const isAdmin = isAdminName(currentUser?.name);
+  const canManageSpot = (spot: Spot) => isAdmin || (!!authUid && spot.createdBy === authUid);
 
   // Map markers show all spots matching filters (never filtered by viewport)
   const mapMarkerSpots = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
     return spots.filter(spot => {
-      const avg = getAverageRating(spot);
       const matchesCategory = activeCategories.length === 0 || (spot.categories || []).some(c => activeCategories.includes(c));
-      const matchesSearch = spot.name.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesSearch = !q || spot.name.toLowerCase().includes(q) || (spot.description || '').toLowerCase().includes(q);
       const isSavedFilter = filterSavedOnly ? savedSpotIds.includes(spot.id) : true;
-      const matchesRating = !spot.reviews?.length || avg >= minRating; // no reviews = always show
+      const matchesRating = !spot.reviews?.length || getAverageRating(spot) >= minRating; // no reviews = always show
       return matchesCategory && matchesSearch && isSavedFilter && matchesRating;
     });
   }, [spots, activeCategories, searchQuery, filterSavedOnly, minRating, savedSpotIds]);
 
-  // Sidebar list is filtered to current viewport for performance
+  // Sidebar list is additionally filtered to the current viewport
   const filteredSpots = useMemo(() => {
-    let result = spots.filter(spot => {
-      const avg = getAverageRating(spot);
-      const matchesCategory = activeCategories.length === 0 || (spot.categories || []).some(c => activeCategories.includes(c));
-      const matchesSearch = spot.name.toLowerCase().includes(searchQuery.toLowerCase());
-      const isVisible = visibleBounds ? visibleBounds.contains([spot.lat, spot.lng]) : true;
-      const isSavedFilter = filterSavedOnly ? savedSpotIds.includes(spot.id) : true;
-      const matchesRating = !spot.reviews?.length || avg >= minRating; // no reviews = always show
-      return matchesCategory && matchesSearch && isVisible && isSavedFilter && matchesRating;
-    });
+    const result = mapMarkerSpots.filter(spot => visibleBounds ? visibleBounds.contains([spot.lat, spot.lng]) : true);
 
-    result = [...result].sort((a, b) => {
+    return result.sort((a, b) => {
       if (sortBy === 'date') return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       if (sortBy === 'rating') return getAverageRating(b) - getAverageRating(a);
       if (sortBy === 'distance' && userLocation) {
@@ -378,9 +433,7 @@ const App: React.FC = () => {
       }
       return 0;
     });
-
-    return result;
-  }, [spots, activeCategories, searchQuery, visibleBounds, filterSavedOnly, minRating, sortBy, userLocation, savedSpotIds]);
+  }, [mapMarkerSpots, visibleBounds, sortBy, userLocation]);
 
   const selectedSpot = useMemo(() => spots.find(s => s.id === selectedSpotId), [spots, selectedSpotId]);
 
@@ -411,6 +464,7 @@ const App: React.FC = () => {
   useEffect(() => { movingSpotIdRef.current = movingSpotId; }, [movingSpotId]);
   const drawerStateRef = useRef<'hidden' | 'half' | 'full'>('half');
   useEffect(() => { drawerStateRef.current = drawerState; }, [drawerState]);
+  const notifyRef = useRef(notify);
 
   // Fully stable — never re-registers Leaflet events
   const handleMapClick = useCallback((lat: number, lng: number) => {
@@ -418,11 +472,17 @@ const App: React.FC = () => {
     if (moving) {
       const spotData = spotsRef.current.find(s => s.id === moving);
       if (!spotData) { setMovingSpotId(null); return; }
-      const { id: _id, ...rest } = spotData;
       setMovingSpotId(null);
       setSelectedSpotId(moving);
-      setDoc(doc(db, 'spots', moving), { ...rest, lat, lng })
-        .catch(err => console.error('Error moving spot:', err));
+      // Only touch the coordinates, so a review added meanwhile is not overwritten.
+      // Hardcoded public spots have no Firestore doc until first moved.
+      updateDoc(doc(db, 'spots', moving), { lat, lng })
+        .catch(err => {
+          if (errorCode(err) !== 'not-found') throw err;
+          const { id: _id, isSaved: _saved, ...rest } = spotData;
+          return setDoc(doc(db, 'spots', moving), { ...rest, lat, lng });
+        })
+        .catch(err => { console.error('Error moving spot:', err); notifyRef.current('Could not move the spot. Try again.'); });
       return;
     }
     if (window.innerWidth < 1024 && drawerStateRef.current !== 'hidden') setDrawerState('hidden');
@@ -439,6 +499,8 @@ const App: React.FC = () => {
   }, []);
 
   const handleLongPress = useCallback((lat: number, lng: number) => {
+    if (movingSpotIdRef.current) return;
+    setIsPickingLocation(false);
     setShowAddModal({ lat, lng });
     setAddMode('form');
   }, []);
@@ -479,38 +541,42 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const handleEditSpot = async (data: Partial<Spot>, categories: CategoryType[], image: string | null) => {
+  const handleEditSpot = async (data: SpotFormData, categories: CategoryType[], image: string | null) => {
     if (!editingSpot || !data.name || categories.length === 0) return;
     setIsAddingSpot(true);
     setAddSpotError('');
     try {
       await updateDoc(doc(db, 'spots', editingSpot.id), {
         name: data.name,
-        description: data.description || '',
+        description: data.description,
         categories,
         image,
       });
       setShowAddModal(null);
       setAddMode('options');
       setEditingSpot(null);
+      notify('Spot updated', 'success');
     } catch (err) {
       console.error("Error updating spot:", err);
-      setAddSpotError('Failed to update spot. Check your connection and try again.');
+      setAddSpotError(errorCode(err) === 'permission-denied'
+        ? 'You can only edit spots you added.'
+        : 'Failed to update spot. Check your connection and try again.');
     } finally {
       setIsAddingSpot(false);
     }
   };
 
-  const handleAddSpot = async (data: Partial<Spot>, categories: CategoryType[], image: string | null) => {
+  const handleAddSpot = async (data: SpotFormData, categories: CategoryType[], image: string | null) => {
     if (!showAddModal || !data.name || categories.length === 0) return;
 
-    const creatorId = currentUser?.id || 'anon-' + Math.random().toString(36).substr(2, 5);
+    // Server-verifiable owner when a Firebase session exists; legacy anon id otherwise.
+    const creatorId = auth.currentUser?.uid || `anon-${randomId(8)}`;
     setIsAddingSpot(true);
     setAddSpotError('');
     try {
       const docRef = await addDoc(collection(db, 'spots'), {
         name: data.name,
-        description: data.description || '',
+        description: data.description,
         categories,
         image,
         lat: showAddModal.lat,
@@ -518,14 +584,12 @@ const App: React.FC = () => {
         createdBy: creatorId,
         createdAt: new Date().toISOString(),
         reviews: [],
-        isSaved: false
       });
-      const newOwned = [...ownedSpotIds, docRef.id];
-      setOwnedSpotIds(newOwned);
-      localStorage.setItem(OWNED_SPOTS_KEY, JSON.stringify(newOwned));
       setShowAddModal(null);
       setAddMode('options');
+      setSelectedSpotId(docRef.id);
       if (window.innerWidth < 1024) setDrawerState('half');
+      notify('Spot added — thanks for sharing!', 'success');
     } catch (err) {
       console.error("Error adding spot:", err);
       setAddSpotError('Failed to save spot. Check your connection and try again.');
@@ -534,101 +598,177 @@ const App: React.FC = () => {
     }
   };
 
-  const handleAddReview = async (spotId: string) => {
-    if (!reviewText.trim()) return;
-    const authorName = currentUser?.name || anonName.trim() || 'Anonymous Explorer';
+  const handleReviewImage = async (file?: File) => {
+    if (!file) return;
+    try {
+      setReviewImage(await compressImageFile(file, REVIEW_IMAGE.maxPx, REVIEW_IMAGE.quality));
+    } catch {
+      notify('This photo could not be read. Try a JPEG or PNG.');
+    }
+  };
+
+  const handleAddReview = async (spot: Spot) => {
+    const comment = reviewText.trim();
+    if (!comment || isSubmittingReview) return;
+    const authorName = (currentUser?.name || anonName.trim() || 'Anonymous Explorer').slice(0, NAME_MAX);
+    // Firestore rejects `undefined` values, so optional fields are added only when set.
     const newReview: Review = {
-      id: Math.random().toString(36).substr(2, 9),
-      userId: currentUser?.id || 'anon',
+      id: randomId(),
+      userId: auth.currentUser?.uid || 'anon',
       userName: authorName,
       rating: reviewRating,
-      comment: reviewText,
+      comment: comment.slice(0, REVIEW_MAX),
       date: new Date().toISOString(),
-      image: reviewImage || undefined
+      ...(reviewImage ? { image: reviewImage } : {}),
     };
+    setIsSubmittingReview(true);
     try {
-      const spotRef = doc(db, 'spots', spotId);
-      await updateDoc(spotRef, { reviews: arrayUnion(newReview) });
-      // Auto-set cover photo from first review image if spot has none
-      const spotForCover = spots.find(s => s.id === spotId);
-      if (reviewImage && spotForCover && !spotForCover.image) {
-        await updateDoc(spotRef, { image: reviewImage });
-      }
+      // One write: the review, plus the review photo as cover if the spot has none.
+      await updateDoc(doc(db, 'spots', spot.id), {
+        reviews: arrayUnion(newReview),
+        ...(reviewImage && !spot.image ? { image: reviewImage } : {}),
+      });
       setReviewText('');
       setAnonName('');
       setReviewRating(5);
       setReviewImage(null);
-    } catch (err) { console.error("Error adding review:", err); }
+      notify('Review posted', 'success');
+    } catch (err) {
+      console.error("Error adding review:", err);
+      notify('Could not post your review. Try again.');
+    } finally {
+      setIsSubmittingReview(false);
+    }
   };
 
-  const handleAuth = async (type: 'login' | 'signup', e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError('');
-    const data = new FormData(e.currentTarget as HTMLFormElement);
-    const nickname = (data.get('nickname') as string).trim();
-    const password = data.get('password') as string;
-    const syntheticEmail = `${nickname}@spekplatz.local`;
+  const handleDeleteSpot = async (spotId: string) => {
+    try {
+      await deleteDoc(doc(db, 'spots', spotId));
+      setSelectedSpotId(null);
+      setConfirmDeleteId(null);
+      notify('Spot deleted', 'success');
+    } catch (err) {
+      console.error('Delete failed:', err);
+      notify(errorCode(err) === 'permission-denied' ? 'You can only delete spots you added.' : 'Could not delete the spot. Try again.');
+    }
+  };
 
+  const takeLocalSaved = () => readJson<string[]>(LOCAL_SAVED_KEY, []);
+  const clearLocalSaved = () => { try { localStorage.removeItem(LOCAL_SAVED_KEY); } catch { /* ignore */ } };
+
+  const handleAuth = async (type: 'login' | 'signup', e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (isAuthSubmitting) return;
+    setAuthError('');
+    const data = new FormData(e.currentTarget);
+    const nickname = String(data.get('nickname') || '').trim();
+    const password = String(data.get('password') || '');
+    const email = nicknameToEmail(nickname);
+
+    if (type === 'signup' && !NICKNAME_PATTERN.test(nickname)) {
+      setAuthError('Nickname: 3–30 letters, digits, dots, dashes or underscores');
+      return;
+    }
+
+    setIsAuthSubmitting(true);
     try {
       if (type === 'signup') {
-        const cred = await createUserWithEmailAndPassword(auth, syntheticEmail, password);
+        // Upgrade the anonymous session in place so spots added before signing up stay yours.
+        const anonUser = auth.currentUser?.isAnonymous ? auth.currentUser : null;
+        const cred = anonUser
+          ? await linkWithCredential(anonUser, EmailAuthProvider.credential(email, password))
+          : await createUserWithEmailAndPassword(auth, email, password);
+        await cred.user.getIdToken(true); // Firestore rules read the email claim
         const avatar = signupAvatar;
         // Merge any locally saved spots into the new account
-        const localSaved: string[] = (() => { try { return JSON.parse(localStorage.getItem(LOCAL_SAVED_KEY) || '[]'); } catch { return []; } })();
+        const localSaved = takeLocalSaved();
         await setDoc(doc(db, 'users', cred.user.uid), { name: nickname, avatar, savedSpotIds: localSaved });
-        localStorage.removeItem(LOCAL_SAVED_KEY);
+        clearLocalSaved();
         setSavedSpotIds(localSaved);
         setCurrentUser({ id: cred.user.uid, name: nickname, avatar });
         setShowAuthModal(null);
         setShowSignupPassword(false);
         setSignupAvatar(AVATAR_OPTIONS[0]);
       } else {
-        const cred = await signInWithEmailAndPassword(auth, syntheticEmail, password);
+        const cred = await signInWithEmailAndPassword(auth, email, password);
         const userDoc = await getDoc(doc(db, 'users', cred.user.uid));
         if (!userDoc.exists()) { setAuthError('Account not found'); return; }
         const userData = userDoc.data();
         // Merge locally saved spots
-        const localSaved: string[] = (() => { try { return JSON.parse(localStorage.getItem(LOCAL_SAVED_KEY) || '[]'); } catch { return []; } })();
+        const localSaved = takeLocalSaved();
         const userSaved: string[] = userData.savedSpotIds || [];
         const mergedSaved = Array.from(new Set([...userSaved, ...localSaved]));
         if (localSaved.length > 0) {
           await updateDoc(doc(db, 'users', cred.user.uid), { savedSpotIds: mergedSaved });
-          localStorage.removeItem(LOCAL_SAVED_KEY);
+          clearLocalSaved();
         }
         setSavedSpotIds(mergedSaved);
         setCurrentUser({ id: cred.user.uid, name: userData.name, avatar: userData.avatar });
         setShowAuthModal(null);
       }
-    } catch (err: any) {
-      if (err.code === 'auth/email-already-in-use') setAuthError('Nickname already taken');
-      else if (['auth/user-not-found', 'auth/wrong-password', 'auth/invalid-credential'].includes(err.code)) setAuthError('Invalid nickname or password');
-      else if (err.code === 'auth/weak-password') setAuthError('Password must be at least 6 characters');
+    } catch (err) {
+      const code = errorCode(err);
+      if (['auth/email-already-in-use', 'auth/credential-already-in-use'].includes(code)) setAuthError('Nickname already taken');
+      else if (['auth/user-not-found', 'auth/wrong-password', 'auth/invalid-credential', 'auth/invalid-email'].includes(code)) setAuthError('Invalid nickname or password');
+      else if (code === 'auth/weak-password') setAuthError('Password must be at least 6 characters');
+      else if (code === 'auth/too-many-requests') setAuthError('Too many attempts. Wait a moment and try again.');
+      else if (code === 'auth/network-request-failed') setAuthError('No connection. Check your internet and try again.');
       else setAuthError('Authentication failed. Please try again.');
+    } finally {
+      setIsAuthSubmitting(false);
     }
   };
 
-  const handleChangePassword = async (e: React.FormEvent) => {
+  const handleChangePassword = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    // React clears currentTarget after the handler returns, so grab the form before awaiting.
+    const form = e.currentTarget;
     setProfileError('');
     setProfileSuccess(false);
-    const formData = new FormData(e.currentTarget as HTMLFormElement);
-    const currentPwd = formData.get('currentPassword') as string;
-    const newPwd = formData.get('newPassword') as string;
-    const confirmPwd = formData.get('confirmPassword') as string;
+    const formData = new FormData(form);
+    const currentPwd = String(formData.get('currentPassword') || '');
+    const newPwd = String(formData.get('newPassword') || '');
+    const confirmPwd = String(formData.get('confirmPassword') || '');
 
     if (newPwd !== confirmPwd) { setProfileError('New passwords do not match'); return; }
     if (newPwd.length < 6) { setProfileError('Password must be at least 6 characters'); return; }
 
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser || !currentUser) { setProfileError('Please sign in again.'); return; }
     try {
-      const firebaseUser = auth.currentUser!;
-      const credential = EmailAuthProvider.credential(`${currentUser!.name}@spekplatz.local`, currentPwd);
+      const credential = EmailAuthProvider.credential(firebaseUser.email || nicknameToEmail(currentUser.name), currentPwd);
       await reauthenticateWithCredential(firebaseUser, credential);
       await updatePassword(firebaseUser, newPwd);
       setProfileSuccess(true);
-      (e.currentTarget as HTMLFormElement).reset();
-    } catch (err: any) {
-      if (['auth/wrong-password', 'auth/invalid-credential'].includes(err.code)) setProfileError('Current password is incorrect');
+      form.reset();
+    } catch (err) {
+      const code = errorCode(err);
+      if (['auth/wrong-password', 'auth/invalid-credential'].includes(code)) setProfileError('Current password is incorrect');
+      else if (code === 'auth/too-many-requests') setProfileError('Too many attempts. Wait a moment and try again.');
       else setProfileError('Failed to update password. Please try again.');
+    }
+  };
+
+  const handleDeleteAccount = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const firebaseUser = auth.currentUser;
+    if (!firebaseUser || !currentUser) return;
+    const password = String(new FormData(e.currentTarget).get('deletePassword') || '');
+    setProfileError('');
+    try {
+      await reauthenticateWithCredential(firebaseUser, EmailAuthProvider.credential(firebaseUser.email || nicknameToEmail(currentUser.name), password));
+      await deleteDoc(doc(db, 'users', firebaseUser.uid));
+      await deleteUser(firebaseUser);
+      setSavedSpotIds([]);
+      setCurrentUser(null);
+      setShowProfileModal(false);
+      setConfirmDeleteAccount(false);
+      notify('Your account has been deleted', 'success');
+    } catch (err) {
+      const code = errorCode(err);
+      setProfileError(['auth/wrong-password', 'auth/invalid-credential'].includes(code)
+        ? 'Password is incorrect'
+        : 'Could not delete your account. Please try again.');
     }
   };
 
@@ -637,22 +777,24 @@ const App: React.FC = () => {
     try {
       await updateDoc(doc(db, 'users', currentUser.id), { avatar: avatarUrl });
       setCurrentUser(prev => prev ? { ...prev, avatar: avatarUrl } : null);
-    } catch (err) { console.error('Failed to update avatar', err); }
+    } catch (err) {
+      console.error('Failed to update avatar', err);
+      notify('Could not change your avatar. Try again.');
+    }
   };
 
   const mainCategories = CATEGORIES.slice(0, 4);
-  const moreCategories = CATEGORIES.slice(4);
 
   const renderSidebarContent = () => {
     if (selectedSpot) {
       const avg = getAverageRating(selectedSpot);
-      const isAdmin = currentUser?.name === 'admin' || currentUser?.isAdmin;
-      const isOwner = isAdmin || (currentUser && currentUser.id === selectedSpot.createdBy) || ownedSpotIds.includes(selectedSpot.id);
+      const isOwner = canManageSpot(selectedSpot);
+      const coverSrc = safeImageSrc(selectedSpot.image);
 
       return (
         <div className="flex flex-col h-full bg-white dark:bg-slate-900 overflow-hidden relative">
           <div className="p-3 md:p-4 flex items-center gap-3 border-b border-gray-100 dark:border-slate-800 shrink-0">
-            <button onClick={() => { setSelectedSpotId(null); setConfirmDeleteId(null); }} className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-xl transition-colors text-gray-600 dark:text-gray-400">
+            <button onClick={() => { setSelectedSpotId(null); setConfirmDeleteId(null); }} aria-label="Back to list" className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-xl transition-colors text-gray-600 dark:text-gray-400">
               <ArrowLeft size={18} />
             </button>
             <h2 className="text-base md:text-lg font-semibold truncate flex-1 text-gray-900 dark:text-white">{selectedSpot.name}</h2>
@@ -660,8 +802,8 @@ const App: React.FC = () => {
           
           <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 no-scrollbar pb-32">
             <div className="relative h-52 md:h-64 w-full rounded-2xl overflow-hidden bg-gray-100 dark:bg-slate-800 shrink-0">
-              {selectedSpot.image ? (
-                <img src={selectedSpot.image} className="w-full h-full object-cover cursor-zoom-in" alt={selectedSpot.name} onClick={() => setLightboxImage(selectedSpot.image!)} />
+              {coverSrc ? (
+                <img src={coverSrc} className="w-full h-full object-cover cursor-zoom-in" alt={selectedSpot.name} onClick={() => setLightboxImage(coverSrc)} />
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center text-gray-300 dark:text-slate-600">
                   <Camera size={48} className="opacity-30 mb-2" />
@@ -671,6 +813,8 @@ const App: React.FC = () => {
               <div className="absolute top-3 right-3">
                 <button
                   onClick={(e) => { e.stopPropagation(); handleToggleSave(selectedSpot.id); }}
+                  aria-label={savedSpotIds.includes(selectedSpot.id) ? 'Remove from saved' : 'Save spot'}
+                  aria-pressed={savedSpotIds.includes(selectedSpot.id)}
                   className={`p-2.5 rounded-full shadow-lg backdrop-blur-sm transition-all active:scale-90 ${savedSpotIds.includes(selectedSpot.id) ? 'bg-red-500 text-white' : 'bg-white/90 dark:bg-slate-800/90 text-gray-500 dark:text-gray-400 hover:text-red-500'}`}
                 >
                   <Heart size={18} fill={savedSpotIds.includes(selectedSpot.id) ? 'white' : 'none'} />
@@ -705,7 +849,7 @@ const App: React.FC = () => {
                 </a>
               </div>
 
-              <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed">
+              <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed whitespace-pre-line break-words">
                 {selectedSpot.description || "No description yet — be the first to explore and share your experience!"}
               </p>
             </div>
@@ -716,11 +860,13 @@ const App: React.FC = () => {
               </h3>
               
               <div className="space-y-4">
-                {selectedSpot.reviews?.map(rev => (
+                {selectedSpot.reviews?.map(rev => {
+                  const revImg = safeImageSrc(rev.image);
+                  return (
                   <div key={rev.id} className="bg-gray-50 dark:bg-slate-800 p-4 rounded-2xl border border-gray-100 dark:border-slate-700/50">
                     <div className="flex justify-between items-start mb-2 md:mb-3">
                       <div className="flex items-center gap-2 md:gap-3">
-                        <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${rev.userName}`} className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-emerald-100 shadow-inner" />
+                        <img src={reviewAvatar(rev)} alt="" loading="lazy" className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-emerald-100 shadow-inner" />
                         <div>
                           <p className="text-[11px] md:text-xs font-bold text-gray-900 dark:text-gray-100">{rev.userName}</p>
                           <div className="flex text-amber-500 mt-0.5">
@@ -730,12 +876,13 @@ const App: React.FC = () => {
                           </div>
                         </div>
                       </div>
-                      <span className="text-[10px] text-gray-400 dark:text-slate-500">{formatDistanceToNow(new Date(rev.date))} ago</span>
+                      <span className="text-[10px] text-gray-400 dark:text-slate-500">{formatDistanceToNow(new Date(rev.date), { addSuffix: true })}</span>
                     </div>
-                    <p className="text-[11px] md:text-xs text-gray-600 dark:text-gray-400 italic leading-relaxed">"{rev.comment}"</p>
-                    {rev.image && <img src={rev.image} className="mt-2 w-full h-32 object-cover rounded-xl cursor-zoom-in" alt="review" onClick={() => setLightboxImage(rev.image!)} />}
+                    <p className="text-[11px] md:text-xs text-gray-600 dark:text-gray-400 italic leading-relaxed whitespace-pre-line break-words">"{rev.comment}"</p>
+                    {revImg && <img src={revImg} loading="lazy" className="mt-2 w-full h-32 object-cover rounded-xl cursor-zoom-in" alt={`Photo by ${rev.userName}`} onClick={() => setLightboxImage(revImg)} />}
                   </div>
-                ))}
+                  );
+                })}
                 {!selectedSpot.reviews?.length && (
                   <div className="text-center py-8 border border-dashed border-gray-200 dark:border-slate-700 rounded-2xl">
                     <MessageSquare size={28} className="mx-auto mb-2 text-gray-300 dark:text-slate-600" />
@@ -749,7 +896,7 @@ const App: React.FC = () => {
                   <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">Leave a review</span>
                   <div className="flex gap-1">
                     {[1,2,3,4,5].map(v => (
-                      <button key={v} onClick={() => setReviewRating(v)} className={`transition-all ${reviewRating >= v ? 'text-amber-400' : 'text-gray-300 dark:text-slate-600 hover:text-amber-300'}`}>
+                      <button key={v} onClick={() => setReviewRating(v)} aria-label={`Rate ${v} of 5`} aria-pressed={reviewRating === v} className={`transition-all ${reviewRating >= v ? 'text-amber-400' : 'text-gray-300 dark:text-slate-600 hover:text-amber-300'}`}>
                         <Star size={16} fill={reviewRating >= v ? 'currentColor' : 'none'} />
                       </button>
                     ))}
@@ -758,33 +905,34 @@ const App: React.FC = () => {
                 {!currentUser && (
                   <input 
                     type="text" value={anonName} onChange={e => setAnonName(e.target.value)}
-                    placeholder="Your nickname..."
-                    className="w-full px-4 py-2.5 mb-2 bg-white dark:bg-gray-800 rounded-xl text-xs outline-none border border-gray-100 dark:border-gray-800 focus:ring-1 focus:ring-emerald-500"
+                    placeholder="Your nickname..." maxLength={NAME_MAX} aria-label="Your nickname"
+                    className="w-full px-4 py-2.5 mb-2 bg-white dark:bg-gray-800 dark:text-gray-100 rounded-xl text-base md:text-xs outline-none border border-gray-100 dark:border-gray-800 focus:ring-1 focus:ring-emerald-500"
                   />
                 )}
                 <div className="relative">
                   <textarea
                     value={reviewText} onChange={e => setReviewText(e.target.value)}
-                    placeholder="Share your experience..."
-                    className="w-full p-4 pr-12 bg-white dark:bg-gray-800 dark:text-gray-100 rounded-2xl text-xs outline-none focus:ring-2 focus:ring-emerald-500 border border-gray-100 dark:border-gray-700 h-20 resize-none transition-all shadow-inner"
+                    placeholder="Share your experience..." maxLength={REVIEW_MAX} aria-label="Your review"
+                    className="w-full p-4 pr-12 bg-white dark:bg-gray-800 dark:text-gray-100 rounded-2xl text-base md:text-xs outline-none focus:ring-2 focus:ring-emerald-500 border border-gray-100 dark:border-gray-700 h-20 resize-none transition-all shadow-inner"
                   />
                   <button
-                    onClick={() => handleAddReview(selectedSpot.id)}
-                    disabled={!reviewText.trim()}
+                    onClick={() => handleAddReview(selectedSpot)}
+                    disabled={!reviewText.trim() || isSubmittingReview}
+                    aria-label="Post review"
                     className="absolute bottom-3 right-3 p-2 bg-emerald-600 text-white rounded-xl shadow-xl hover:scale-110 transition-transform disabled:opacity-50 disabled:scale-100"
                   >
                     <Send size={16} />
                   </button>
                 </div>
                 <div className="flex items-center gap-2 mt-2">
-                  <input type="file" hidden ref={reviewImageRef} accept="image/*" onChange={e => { const f = e.target.files?.[0]; if(f) { const r = new FileReader(); r.onloadend = () => setReviewImage(r.result as string); r.readAsDataURL(f); } }} />
+                  <input type="file" hidden ref={reviewImageRef} accept="image/*" onChange={e => { handleReviewImage(e.target.files?.[0]); e.target.value = ''; }} />
                   <button type="button" onClick={() => reviewImageRef.current?.click()} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white dark:bg-slate-700 text-gray-500 dark:text-gray-400 text-[10px] font-medium border border-gray-200 dark:border-slate-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors">
                     <Camera size={13} /> {reviewImage ? 'Change Photo' : 'Add Photo'}
                   </button>
                   {reviewImage && (
                     <div className="relative">
-                      <img src={reviewImage} className="h-8 w-8 rounded-lg object-cover" />
-                      <button onClick={() => setReviewImage(null)} className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center"><X size={8} /></button>
+                      <img src={reviewImage} className="h-8 w-8 rounded-lg object-cover" alt="Selected review photo" />
+                      <button onClick={() => setReviewImage(null)} aria-label="Remove photo" className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center"><X size={8} /></button>
                     </div>
                   )}
                 </div>
@@ -797,11 +945,7 @@ const App: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-500 dark:text-gray-400 flex-1">Delete this spot permanently?</span>
                     <button
-                      onClick={() => {
-                        deleteDoc(doc(db, 'spots', selectedSpot.id))
-                          .then(() => { setSelectedSpotId(null); setConfirmDeleteId(null); })
-                          .catch(err => console.error('Delete failed:', err));
-                      }}
+                      onClick={() => handleDeleteSpot(selectedSpot.id)}
                       className="px-3 py-2 bg-red-500 text-white rounded-xl text-xs font-semibold hover:bg-red-600 transition-colors"
                     >Yes, delete</button>
                     <button onClick={() => setConfirmDeleteId(null)} className="px-3 py-2 bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-400 rounded-xl text-xs font-medium hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors">Cancel</button>
@@ -831,13 +975,14 @@ const App: React.FC = () => {
               <h1 className="text-lg font-bold text-gray-900 dark:text-white tracking-tight">SpekPlatz</h1>
             </div>
             <div className="flex gap-1">
-              <button onClick={() => setSettings(s => ({ ...s, theme: s.theme === 'light' ? 'dark' : 'light' }))} className="p-2 rounded-xl bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors">
+              <button onClick={() => setSettings(s => ({ ...s, theme: s.theme === 'light' ? 'dark' : 'light' }))} aria-label={settings.theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'} className="p-2 rounded-xl bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors">
                 {settings.theme === 'light' ? <Moon size={16} className="text-gray-500" /> : <Sun size={16} className="text-amber-400" />}
               </button>
               <button
                 onClick={() => currentUser ? setShowProfileModal(true) : setShowAuthModal('login')}
                 className="p-2 rounded-xl bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors"
                 title={currentUser ? currentUser.name : 'Sign in'}
+                aria-label={currentUser ? `Profile: ${currentUser.name}` : 'Sign in'}
               >
                 {currentUser
                   ? <img src={currentUser.avatar} className="w-4 h-4 rounded-full" alt={currentUser.name} />
@@ -850,8 +995,8 @@ const App: React.FC = () => {
             <div className="relative group">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 group-focus-within:text-emerald-500 transition-colors" size={16} />
               <input
-                type="text" placeholder="Search spots…" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-gray-100 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 border-none rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm text-gray-700"
+                type="search" placeholder="Search spots…" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} aria-label="Search spots"
+                className="w-full pl-10 pr-4 py-2.5 bg-gray-100 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 border-none rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-base md:text-sm text-gray-700"
               />
             </div>
 
@@ -865,7 +1010,7 @@ const App: React.FC = () => {
               <div className="flex items-center gap-0.5 ml-1">
                 <span className="text-[10px] text-gray-400 dark:text-slate-500 mr-1">Min</span>
                 {[1,2,3,4,5].map(v => (
-                  <button key={v} onClick={() => setMinRating(minRating === v ? 0 : v)} className={`p-0.5 transition-all ${minRating >= v ? 'text-amber-400' : 'text-gray-300 dark:text-slate-600 hover:text-amber-300'}`}>
+                  <button key={v} onClick={() => setMinRating(minRating === v ? 0 : v)} aria-label={`Minimum ${v} star${v > 1 ? 's' : ''}`} aria-pressed={minRating === v} className={`p-0.5 transition-all ${minRating >= v ? 'text-amber-400' : 'text-gray-300 dark:text-slate-600 hover:text-amber-300'}`}>
                     <Star size={14} fill={minRating >= v ? 'currentColor' : 'none'} strokeWidth={1.5} />
                   </button>
                 ))}
@@ -912,15 +1057,18 @@ const App: React.FC = () => {
             const avg = getAverageRating(spot);
             const isSelected = selectedSpotId === spot.id;
             const dist = userLocation ? getDistance(userLocation[0], userLocation[1], spot.lat, spot.lng) : null;
+            const thumb = safeImageSrc(spot.image);
             return (
               <motion.div
                 key={spot.id} onClick={() => handleSpotClick(spot)}
+                role="button" tabIndex={0}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleSpotClick(spot); } }}
                 whileTap={{ scale: 0.99 }}
-                className={`group bg-white dark:bg-slate-800 p-3 rounded-2xl border transition-all cursor-pointer ${isSelected ? 'ring-2 ring-emerald-500 border-transparent shadow-md z-10' : 'border-gray-100 dark:border-slate-700 hover:border-emerald-200 dark:hover:border-emerald-700/50 hover:shadow-sm'}`}
+                className={`group outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 bg-white dark:bg-slate-800 p-3 rounded-2xl border transition-all cursor-pointer ${isSelected ? 'ring-2 ring-emerald-500 border-transparent shadow-md z-10' : 'border-gray-100 dark:border-slate-700 hover:border-emerald-200 dark:hover:border-emerald-700/50 hover:shadow-sm'}`}
               >
                 <div className="flex gap-3">
                   <div className="w-[72px] h-[72px] rounded-xl overflow-hidden flex-shrink-0 bg-gray-100 dark:bg-slate-700">
-                    {spot.image ? <img src={spot.image} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-300 dark:text-slate-600"><MapPin size={22} /></div>}
+                    {thumb ? <img src={thumb} alt="" loading="lazy" decoding="async" className="w-full h-full object-cover" /> :<div className="w-full h-full flex items-center justify-center text-gray-300 dark:text-slate-600"><MapPin size={22} /></div>}
                   </div>
                   <div className="flex-1 min-w-0 flex flex-col justify-between">
                     <div>
@@ -941,7 +1089,7 @@ const App: React.FC = () => {
                     <div className="flex items-center justify-between">
                       {spot.description && <p className="text-[11px] text-gray-400 dark:text-slate-500 line-clamp-1 flex-1 mr-2">{spot.description}</p>}
                       {dist !== null && (
-                        <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-500 shrink-0">{dist < 1 ? `${(dist*1000).toFixed(0)}m` : `${dist.toFixed(1)}km`}</span>
+                        <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-500 shrink-0">{formatDistance(dist)}</span>
                       )}
                     </div>
                   </div>
@@ -971,20 +1119,50 @@ const App: React.FC = () => {
   };
 
   const handleAddLiveLocation = () => {
-    if ("geolocation" in navigator) {
-      navigator.geolocation.getCurrentPosition((position) => {
-        const { latitude, longitude } = position.coords;
-        console.log("Found location:", latitude, longitude);
-        setShowAddModal({ lat: latitude, lng: longitude });
-        setAddMode('form');
-      }, (error) => {
-        console.error("Geo error:", error);
-        alert("Unable to retrieve location. Please check your browser permissions.");
-      });
-    } else {
-      alert("Geolocation is not supported by your browser.");
+    if (!("geolocation" in navigator)) {
+      notify("Geolocation is not supported by your browser.");
+      return;
     }
+    navigator.geolocation.getCurrentPosition((position) => {
+      const { latitude, longitude } = position.coords;
+      setShowAddModal({ lat: latitude, lng: longitude });
+      setAddMode('form');
+    }, () => {
+      notify("Unable to retrieve location. Please check your browser permissions.");
+    }, { enableHighAccuracy: true, timeout: 15000 });
   };
+
+  const closeAddModal = () => {
+    if (isAddingSpot) return;
+    setShowAddModal(null);
+    setAddSpotError('');
+    setEditingSpot(null);
+  };
+
+  // Escape closes the topmost overlay.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (lightboxImage) setLightboxImage(null);
+      else if (showLegalModal) setShowLegalModal(null);
+      else if (showAuthModal) { setShowAuthModal(null); setAuthError(''); }
+      else if (showProfileModal) { setShowProfileModal(false); setConfirmDeleteAccount(false); }
+      else if (showAddModal) closeAddModal();
+      else if (showMapMenu) setShowMapMenu(false);
+      else if (isPickingLocation) setIsPickingLocation(false);
+      else if (movingSpotId) setMovingSpotId(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  const tileSource = getTileSource(settings);
+  const drawerMax = viewportHeight * 0.94;
+  const mapModes = ([
+    { id: 'streets', label: 'Streets' },
+    { id: 'outdoor', label: 'Tourist' },
+    { id: 'satellite', label: 'Satellite' },
+  ] as const).filter(opt => opt.id !== 'outdoor' || hasMapyKey);
 
   return (
     <div className="flex flex-col lg:flex-row h-screen w-screen overflow-hidden bg-white dark:bg-gray-900 font-sans">
@@ -995,23 +1173,11 @@ const App: React.FC = () => {
       <div className="flex-1 relative h-full min-h-0">
         <MapContainer center={INITIAL_CENTER} zoom={INITIAL_ZOOM} scrollWheelZoom={true} ref={setMapInstance} style={{ height: '100%', width: '100%' }} zoomControl={false}>
           <TileLayer
-            key={settings.mode + settings.theme}
-            url={
-              settings.mode === 'satellite'
-                ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
-                : settings.mode === 'outdoor'
-                ? `https://api.mapy.com/v1/maptiles/outdoor/256/{z}/{x}/{y}?apikey=${import.meta.env.VITE_MAPY_KEY}`
-                : settings.theme === 'dark'
-                ? 'https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png'
-                : 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
-            }
-            attribution={
-              settings.mode === 'outdoor'
-                ? '&copy; <a href="https://mapy.com/" target="_blank" rel="noopener">Mapy.com</a>'
-                : settings.mode === 'satellite'
-                ? 'Tiles &copy; Esri'
-                : '&copy; <a href="https://carto.com/">CARTO</a>'
-            }
+            key={tileSource.url + (tileSource.className || '')}
+            url={tileSource.url}
+            attribution={tileSource.attribution}
+            maxZoom={tileSource.maxZoom}
+            className={tileSource.className}
           />
           <MapController onViewportChange={setVisibleBounds} onLocationFound={handleLocationFound} onLocationError={handleLocationError} onMapClick={handleMapClick} onLongPress={handleLongPress} onDragStart={handleMapDragStart} />
           
@@ -1019,6 +1185,8 @@ const App: React.FC = () => {
 
           {mapMarkerSpots.map(spot => {
             const popupDist = userLocation ? getDistance(userLocation[0], userLocation[1], spot.lat, spot.lng) : null;
+            const popupImg = safeImageSrc(spot.image);
+            const popupAvg = getAverageRating(spot);
             return (
               <Marker
                 key={spot.id}
@@ -1030,11 +1198,12 @@ const App: React.FC = () => {
                 <Popup minWidth={220} maxWidth={260} closeButton={false} autoPan={false}>
                   <div className="bg-white dark:bg-gray-900 overflow-hidden cursor-default w-[220px]">
                     <div className="relative h-32 w-full bg-gray-100 dark:bg-gray-800">
-                      {spot.image
-                        ? <img src={spot.image} className="w-full h-full object-cover cursor-zoom-in" onClick={() => setLightboxImage(spot.image!)} />
+                      {popupImg
+                        ? <img src={popupImg} alt={spot.name} loading="lazy" className="w-full h-full object-cover cursor-zoom-in" onClick={() => setLightboxImage(popupImg)} />
                         : <div className="w-full h-full flex items-center justify-center text-gray-300 dark:text-gray-600"><MapPin size={32} /></div>
                       }
                       <button
+                        aria-label="Close"
                         onClick={(e) => { e.stopPropagation(); setSelectedSpotId(null); mapInstance?.closePopup(); }}
                         className="absolute top-2 right-2 w-6 h-6 bg-black/50 text-white rounded-full flex items-center justify-center hover:bg-black/70 transition-colors"
                       >
@@ -1052,12 +1221,12 @@ const App: React.FC = () => {
                       <div className="flex items-center justify-between mb-2.5">
                         <div className="flex items-center gap-1 text-amber-500 text-xs font-bold">
                           <Star size={11} fill="currentColor" />
-                          <span>{getAverageRating(spot) > 0 ? getAverageRating(spot).toFixed(1) : 'New'}</span>
+                          <span>{popupAvg > 0 ? popupAvg.toFixed(1) : 'New'}</span>
                           <span className="text-gray-400 dark:text-gray-500 text-[10px]">({spot.reviews?.length || 0})</span>
                         </div>
                         {popupDist !== null && (
                           <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
-                            {popupDist < 1 ? `${(popupDist*1000).toFixed(0)}m` : `${popupDist.toFixed(1)}km`}
+                            {formatDistance(popupDist)}
                           </span>
                         )}
                       </div>
@@ -1081,17 +1250,14 @@ const App: React.FC = () => {
           <div className="relative">
             <button
               onClick={() => setShowMapMenu(v => !v)}
+              aria-label="Map style" aria-expanded={showMapMenu}
               className={`w-10 h-10 rounded-xl shadow-md flex items-center justify-center transition-all active:scale-90 border ${settings.mode !== 'streets' ? 'bg-emerald-500 border-emerald-400/50 text-white shadow-emerald-500/20' : 'bg-white/90 dark:bg-slate-800/90 border-gray-200/60 dark:border-slate-700/60 text-gray-500 dark:text-gray-400 backdrop-blur-sm'}`}
             ><Layers size={17} /></button>
             {showMapMenu && (
               <>
                 <div className="fixed inset-0 z-[1000]" onClick={() => setShowMapMenu(false)} />
                 <div className="absolute right-12 top-0 z-[1001] bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-gray-200/60 dark:border-slate-700/60 py-1 min-w-[160px] backdrop-blur-sm">
-                  {([
-                    { id: 'streets', label: 'Streets' },
-                    { id: 'outdoor', label: 'Tourist' },
-                    { id: 'satellite', label: 'Satellite' },
-                  ] as const).map(opt => (
+                  {mapModes.map(opt => (
                     <button
                       key={opt.id}
                       onClick={() => { setSettings(s => ({ ...s, mode: opt.id })); setShowMapMenu(false); }}
@@ -1103,11 +1269,13 @@ const App: React.FC = () => {
             )}
           </div>
           <button
-            onClick={() => { setLocationDenied(false); setSelectedSpotId(null); mapInstance?.closePopup(); setLocationStatus('searching'); mapInstance?.locate({ setView: true, maxZoom: 16 }); }}
+            onClick={() => { setLocationDenied(false); setSelectedSpotId(null); mapInstance?.closePopup(); setLocationStatus('searching'); mapInstance?.locate({ setView: true, maxZoom: 16, enableHighAccuracy: true, timeout: 15000 }); }}
+            aria-label="Show my location"
             className={`w-10 h-10 rounded-xl shadow-md flex items-center justify-center transition-all active:scale-90 border ${locationDenied ? 'bg-red-500 border-red-400/50 text-white shadow-red-500/20' : 'bg-white/90 dark:bg-slate-800/90 border-gray-200/60 dark:border-slate-700/60 text-emerald-500 dark:text-emerald-400 backdrop-blur-sm'}`}
           ><LocateFixed size={17} /></button>
           <button
             onClick={() => { setShowAddModal({ lat: mapInstance?.getCenter().lat || 0, lng: mapInstance?.getCenter().lng || 0 }); setAddMode('options'); }}
+            aria-label="Add a spot"
             className="w-10 h-10 bg-emerald-500 text-white rounded-xl shadow-md shadow-emerald-500/25 flex items-center justify-center active:scale-90 transition-all border border-emerald-400/40"
           ><Plus size={19} strokeWidth={2.5} /></button>
         </div>
@@ -1125,7 +1293,7 @@ const App: React.FC = () => {
           <div className="absolute top-10 left-0 right-0 z-[2000] flex justify-center px-4 pointer-events-none">
             <div className="bg-emerald-600 text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 font-black text-xs border-2 border-white/30 backdrop-blur-lg pointer-events-auto animate-pulse">
               <MapPin size={20} /> Select Location
-              <button onClick={() => setIsPickingLocation(false)} className="p-1.5 bg-black/10 rounded-full ml-2"><X size={16} /></button>
+              <button onClick={() => setIsPickingLocation(false)} aria-label="Cancel" className="p-1.5 bg-black/10 rounded-full ml-2"><X size={16} /></button>
             </div>
           </div>
         )}
@@ -1134,7 +1302,7 @@ const App: React.FC = () => {
           <div className="absolute top-10 left-0 right-0 z-[2000] flex justify-center px-4 pointer-events-none">
             <div className="bg-amber-500 text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 font-black text-xs border-2 border-white/30 backdrop-blur-lg pointer-events-auto animate-pulse">
               <Move size={18} /> Tap the new location on the map
-              <button onClick={() => setMovingSpotId(null)} className="p-1.5 bg-black/10 rounded-full ml-2"><X size={16} /></button>
+              <button onClick={() => setMovingSpotId(null)} aria-label="Cancel" className="p-1.5 bg-black/10 rounded-full ml-2"><X size={16} /></button>
             </div>
           </div>
         )}
@@ -1164,11 +1332,12 @@ const App: React.FC = () => {
             y: drawerState === 'full'
               ? 0
               : drawerState === 'half'
-              ? window.innerHeight * 0.94 * 0.5
-              : window.innerHeight * 0.94 - 220
+              ? drawerMax * 0.5
+              : drawerMax - 220
           }}
           transition={{ type: 'spring', damping: 30, stiffness: 280 }}
-          className="bg-white dark:bg-slate-900 rounded-t-[2rem] shadow-2xl h-[94vh] flex flex-col pointer-events-auto border-t border-gray-100 dark:border-slate-800"
+          style={{ height: drawerMax }}
+          className="bg-white dark:bg-slate-900 rounded-t-[2rem] shadow-2xl flex flex-col pointer-events-auto border-t border-gray-100 dark:border-slate-800"
         >
           {/* Handle pill — drag or tap to open/close */}
           <motion.div
@@ -1181,6 +1350,7 @@ const App: React.FC = () => {
               else if (info.velocity.y > 150 || info.offset.y > 30) setDrawerState('hidden');
             }}
             onClick={() => setDrawerState(prev => prev === 'full' ? 'hidden' : 'full')}
+            role="button" aria-label={drawerState === 'full' ? 'Collapse list' : 'Expand list'}
             className="h-12 w-full flex items-center justify-center shrink-0 cursor-grab active:cursor-grabbing select-none"
             style={{ touchAction: 'none' }}
           >
@@ -1202,7 +1372,7 @@ const App: React.FC = () => {
       <AnimatePresence>
         {showAddModal && (
           <div className="fixed inset-0 z-[4000] flex items-center justify-center p-4">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={() => { if (isAddingSpot) return; setShowAddModal(null); setAddSpotError(''); setEditingSpot(null); }} />
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80 backdrop-blur-md" onClick={closeAddModal} />
             <motion.div initial={{ scale: 0.95, opacity: 0, y: 30 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 30 }} className="relative w-full max-w-sm lg:max-w-4xl bg-white dark:bg-slate-900 rounded-2xl md:rounded-3xl shadow-2xl p-6 md:p-10 space-y-6 md:space-y-8 max-h-[95vh] overflow-y-auto no-scrollbar border border-gray-100 dark:border-slate-800">
               {addMode === 'options' ? (
                 <div className="space-y-6 max-w-sm mx-auto">
@@ -1246,7 +1416,7 @@ const App: React.FC = () => {
                 <div className="space-y-6">
                   <div className="flex justify-between items-center">
                     <h2 className="text-xl font-bold text-gray-900 dark:text-white">{editingSpot ? 'Edit Spot' : 'New Spot'}</h2>
-                    <button onClick={() => { setAddMode('options'); setAddSpotError(''); setEditingSpot(null); }} className="p-2 bg-gray-100 dark:bg-slate-800 rounded-xl text-gray-400 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors"><ArrowLeft size={18} /></button>
+                    <button onClick={() => { if (editingSpot) { closeAddModal(); return; } setAddMode('options'); setAddSpotError(''); }} aria-label="Back" className="p-2 bg-gray-100 dark:bg-slate-800 rounded-xl text-gray-400 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors"><ArrowLeft size={18} /></button>
                   </div>
                   <SpotForm onSubmit={(d, cats, img) => editingSpot ? handleEditSpot(d, cats, img) : handleAddSpot(d, cats, img)} initialData={editingSpot} isSubmitting={isAddingSpot} submitError={addSpotError} />
                 </div>
@@ -1286,9 +1456,9 @@ const App: React.FC = () => {
                       type="password" name="password" placeholder="Password" required autoComplete="current-password"
                       className="w-full px-4 py-3 bg-slate-800 text-gray-100 placeholder-slate-500 rounded-xl font-medium outline-none border border-slate-700 focus:ring-2 focus:ring-blue-500 text-sm"
                     />
-                    {authError && <p className="text-xs text-red-400 text-center">{authError}</p>}
-                    <button type="submit" className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-blue-700 transition-colors active:scale-95 mt-1">
-                      Sign in
+                    {authError && <p role="alert" className="text-xs text-red-400 text-center">{authError}</p>}
+                    <button type="submit" disabled={isAuthSubmitting} className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-blue-700 transition-colors active:scale-95 mt-1 disabled:opacity-60">
+                      {isAuthSubmitting ? 'Signing in…' : 'Sign in'}
                     </button>
                   </form>
                   <p className="mt-5 text-center text-xs text-slate-500">
@@ -1308,9 +1478,10 @@ const App: React.FC = () => {
                       <p className="text-xs text-gray-400 dark:text-slate-500">Join the SpekPlatz community</p>
                     </div>
                   </div>
-                  <form onSubmit={(e) => { (e as any)._signupAvatar = signupAvatar; handleAuth('signup', e); }} className="space-y-3">
+                  <form onSubmit={(e) => handleAuth('signup', e)} className="space-y-3">
                     <input
                       name="nickname" placeholder="Choose a nickname" required autoComplete="username"
+                      minLength={3} maxLength={30} pattern="[a-zA-Z0-9._\-]{3,30}" title="3–30 letters, digits, dots, dashes or underscores"
                       className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm"
                     />
 
@@ -1321,6 +1492,7 @@ const App: React.FC = () => {
                         {AVATAR_OPTIONS.map((url) => (
                           <button
                             key={url} type="button" onClick={() => setSignupAvatar(url)}
+                            aria-label="Choose avatar" aria-pressed={signupAvatar === url}
                             className={`w-full aspect-square rounded-xl overflow-hidden border-2 transition-all ${signupAvatar === url ? 'border-emerald-500 scale-105 shadow-md shadow-emerald-200 dark:shadow-emerald-900' : 'border-transparent hover:border-emerald-300 dark:hover:border-emerald-700'}`}
                           >
                             <img src={url} className="w-full h-full" alt="" />
@@ -1340,15 +1512,15 @@ const App: React.FC = () => {
                       <button
                         type="button" onClick={() => setShowSignupPassword(v => !v)}
                         className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors p-1"
-                        tabIndex={-1}
+                        aria-label={showSignupPassword ? 'Hide password' : 'Show password'}
                       >
                         {showSignupPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                       </button>
                     </div>
 
-                    {authError && <p className="text-xs text-red-500 dark:text-red-400 text-center">{authError}</p>}
-                    <button type="submit" className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-emerald-700 transition-colors active:scale-95 mt-1">
-                      Create account
+                    {authError && <p role="alert" className="text-xs text-red-500 dark:text-red-400 text-center">{authError}</p>}
+                    <button type="submit" disabled={isAuthSubmitting} className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-emerald-700 transition-colors active:scale-95 mt-1 disabled:opacity-60">
+                      {isAuthSubmitting ? 'Creating…' : 'Create account'}
                     </button>
                   </form>
                   <p className="mt-5 text-center text-xs text-gray-400 dark:text-slate-500">
@@ -1363,9 +1535,9 @@ const App: React.FC = () => {
 
         {showProfileModal && currentUser && (
           <div className="fixed inset-0 z-[5000] flex items-center justify-center p-4">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/90 backdrop-blur-2xl" onClick={() => { setShowProfileModal(false); setProfileError(''); setProfileSuccess(false); }} />
-            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl p-8 shadow-2xl border border-gray-100 dark:border-slate-800">
-              <button onClick={() => { setShowProfileModal(false); setProfileError(''); setProfileSuccess(false); }} className="absolute top-4 right-4 p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"><X size={18} /></button>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/90 backdrop-blur-2xl" onClick={() => { setShowProfileModal(false); setProfileError(''); setProfileSuccess(false); setConfirmDeleteAccount(false); }} />
+            <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="relative w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl p-8 shadow-2xl border border-gray-100 dark:border-slate-800 max-h-[92vh] overflow-y-auto no-scrollbar">
+              <button onClick={() => { setShowProfileModal(false); setProfileError(''); setProfileSuccess(false); setConfirmDeleteAccount(false); }} aria-label="Close" className="absolute top-4 right-4 p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"><X size={18} /></button>
 
               {/* Avatar + name */}
               <div className="text-center mb-5">
@@ -1381,6 +1553,7 @@ const App: React.FC = () => {
                   {AVATAR_OPTIONS.map((url) => (
                     <button
                       key={url} type="button" onClick={() => handleAvatarChange(url)}
+                      aria-label="Choose avatar" aria-pressed={currentUser.avatar === url}
                       className={`w-full aspect-square rounded-xl overflow-hidden border-2 transition-all ${currentUser.avatar === url ? 'border-emerald-500 scale-105 shadow-md shadow-emerald-200 dark:shadow-emerald-900' : 'border-transparent hover:border-emerald-300 dark:hover:border-emerald-700'}`}
                     >
                       <img src={url} className="w-full h-full" alt="" />
@@ -1392,9 +1565,10 @@ const App: React.FC = () => {
               {/* Change password */}
               <form onSubmit={handleChangePassword} className="space-y-3">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-slate-500 mb-3 flex items-center gap-1.5"><ShieldCheck size={13} /> Change Password</h3>
-                <input type="password" name="currentPassword" placeholder="Current password" required className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
-                <input type="password" name="newPassword" placeholder="New password" required className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
-                <input type="password" name="confirmPassword" placeholder="Confirm new password" required className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
+                <input type="text" name="username" autoComplete="username" value={currentUser.name} readOnly hidden />
+                <input type="password" name="currentPassword" placeholder="Current password" required autoComplete="current-password" aria-label="Current password" className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
+                <input type="password" name="newPassword" placeholder="New password" required minLength={6} autoComplete="new-password" aria-label="New password" className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
+                <input type="password" name="confirmPassword" placeholder="Confirm new password" required minLength={6} autoComplete="new-password" aria-label="Confirm new password" className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
                 {profileError && <p className="text-xs text-red-500 dark:text-red-400">{profileError}</p>}
                 {profileSuccess && <p className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><CheckCircle2 size={12} /> Password updated successfully</p>}
                 <button type="submit" className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-emerald-700 transition-colors active:scale-95">Update password</button>
@@ -1404,60 +1578,35 @@ const App: React.FC = () => {
               <button onClick={handleLogout} className="w-full mt-3 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-medium text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors border border-red-100 dark:border-red-900/40">
                 <LogOut size={15} /> Sign out
               </button>
+
+              {/* Delete account */}
+              {confirmDeleteAccount ? (
+                <form onSubmit={handleDeleteAccount} className="mt-4 p-4 rounded-2xl bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-900/40 space-y-2">
+                  <p className="text-xs text-red-600 dark:text-red-300">This permanently deletes your account and saved spots. Spots and reviews you posted stay on the map. Enter your password to confirm.</p>
+                  <input type="password" name="deletePassword" placeholder="Password" required autoComplete="current-password" aria-label="Password" className="w-full px-4 py-2.5 bg-white dark:bg-slate-800 dark:text-gray-100 rounded-xl outline-none border border-red-200 dark:border-red-900/60 focus:ring-2 focus:ring-red-500 text-sm" />
+                  <div className="flex gap-2">
+                    <button type="submit" className="flex-1 py-2 bg-red-500 text-white rounded-xl text-xs font-semibold hover:bg-red-600 transition-colors">Delete my account</button>
+                    <button type="button" onClick={() => setConfirmDeleteAccount(false)} className="flex-1 py-2 bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-300 rounded-xl text-xs font-medium hover:bg-gray-100 dark:hover:bg-slate-700 transition-colors">Cancel</button>
+                  </div>
+                </form>
+              ) : (
+                <button onClick={() => { setConfirmDeleteAccount(true); setProfileError(''); }} className="w-full mt-3 text-[11px] text-gray-400 hover:text-red-500 transition-colors">
+                  Delete account
+                </button>
+              )}
             </motion.div>
           </div>
         )}
       </AnimatePresence>
 
-      {/* Legal Modal */}
       <AnimatePresence>
         {showLegalModal && (
-          <div className="fixed inset-0 z-[8000] flex items-center justify-center p-4">
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowLegalModal(null)} />
-            <motion.div initial={{ scale: 0.95, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 20 }} className="relative w-full max-w-lg bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-gray-100 dark:border-slate-800 max-h-[85vh] overflow-y-auto no-scrollbar">
-              <div className="sticky top-0 bg-white dark:bg-slate-900 px-6 pt-6 pb-4 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between">
-                <div className="flex gap-2">
-                  <button onClick={() => setShowLegalModal('terms')} className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all ${showLegalModal === 'terms' ? 'bg-emerald-600 text-white' : 'text-gray-400 dark:text-slate-500 hover:text-gray-600'}`}>Terms & Conditions</button>
-                  <button onClick={() => setShowLegalModal('privacy')} className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all ${showLegalModal === 'privacy' ? 'bg-emerald-600 text-white' : 'text-gray-400 dark:text-slate-500 hover:text-gray-600'}`}>Privacy Policy</button>
-                </div>
-                <button onClick={() => setShowLegalModal(null)} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"><X size={18} /></button>
-              </div>
-              <div className="px-6 py-5 space-y-4 text-xs text-gray-600 dark:text-gray-400 leading-relaxed">
-                {showLegalModal === 'terms' ? (
-                  <>
-                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Terms & Conditions</p>
-                    <p>Last updated: February 2026</p>
-                    <p>By using SpekPlatz, you agree to these terms. SpekPlatz is a community platform for discovering and sharing hidden spots. It is provided as-is for personal, non-commercial use.</p>
-                    <p className="font-medium text-gray-700 dark:text-gray-300">Content Guidelines</p>
-                    <p>You are responsible for all content you submit. Do not post illegal content, private property locations without permission, dangerous or restricted areas, or content that violates others' privacy.</p>
-                    <p className="font-medium text-gray-700 dark:text-gray-300">Liability</p>
-                    <p>SpekPlatz is not responsible for the accuracy of user-submitted locations, safety conditions at any spot, or any harm arising from visiting spots listed on the platform. Always use your own judgment and respect local laws.</p>
-                    <p className="font-medium text-gray-700 dark:text-gray-300">Your Account</p>
-                    <p>Accounts are created with a nickname and password. You are responsible for keeping your credentials secure. We reserve the right to remove accounts or content that violates these terms.</p>
-                    <p className="font-medium text-gray-700 dark:text-gray-300">Changes</p>
-                    <p>We may update these terms at any time. Continued use of SpekPlatz after changes constitutes acceptance.</p>
-                  </>
-                ) : (
-                  <>
-                    <p className="text-sm font-semibold text-gray-900 dark:text-white">Privacy Policy</p>
-                    <p>Last updated: February 2026</p>
-                    <p>SpekPlatz takes your privacy seriously. Here's what we collect and how we use it.</p>
-                    <p className="font-medium text-gray-700 dark:text-gray-300">What We Collect</p>
-                    <p>When you create an account: your chosen nickname and password (stored in our database). When you add spots or reviews: the content you submit, including any photos. Your approximate location is used only when you click "Use my location" and is never stored on our servers.</p>
-                    <p className="font-medium text-gray-700 dark:text-gray-300">How We Use It</p>
-                    <p>Your data is used solely to operate the SpekPlatz platform — displaying spots, reviews, and personalising your saved spots. We do not sell, share, or monetise your data.</p>
-                    <p className="font-medium text-gray-700 dark:text-gray-300">Data Storage</p>
-                    <p>Data is stored securely in Google Firebase (Firestore). Your session is stored locally in your browser. Photos are stored as base64 inside Firestore documents.</p>
-                    <p className="font-medium text-gray-700 dark:text-gray-300">Your Rights</p>
-                    <p>You may request deletion of your account and all associated data at any time by contacting us. Spots and reviews you created can be deleted from within the app.</p>
-                    <p className="font-medium text-gray-700 dark:text-gray-300">Contact</p>
-                    <p>For any privacy questions, reach out via the SpekPlatz GitHub page.</p>
-                  </>
-                )}
-              </div>
-            </motion.div>
-          </div>
+          <LegalModal tab={showLegalModal} onTabChange={setShowLegalModal} onClose={() => setShowLegalModal(null)} />
         )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {toast && <Toast toast={toast} onClose={() => setToast(null)} />}
       </AnimatePresence>
 
       {/* Lightbox */}
@@ -1475,11 +1624,13 @@ const App: React.FC = () => {
               animate={{ scale: 1 }}
               exit={{ scale: 0.85 }}
               src={lightboxImage}
+              alt=""
               className="max-w-full max-h-full object-contain rounded-2xl shadow-2xl"
               onClick={e => e.stopPropagation()}
             />
             <button
               onClick={() => setLightboxImage(null)}
+              aria-label="Close photo"
               className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/20 text-white rounded-full flex items-center justify-center transition-colors"
             >
               <X size={20} />
@@ -1487,128 +1638,6 @@ const App: React.FC = () => {
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
-  );
-};
-
-const CoordinatesForm = ({ onConfirm, onBack }: { onConfirm: (lat: number, lng: number) => void; onBack: () => void }) => {
-  const [latVal, setLatVal] = useState('');
-  const [lngVal, setLngVal] = useState('');
-  const [error, setError] = useState('');
-
-  const handleSubmit = () => {
-    const lat = parseFloat(latVal.replace(',', '.').trim());
-    const lng = parseFloat(lngVal.replace(',', '.').trim());
-    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      setError('Enter valid coordinates (lat −90…90, lng −180…180).');
-      return;
-    }
-    onConfirm(lat, lng);
-  };
-
-  return (
-    <div className="space-y-6 max-w-sm mx-auto">
-      <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold text-gray-900 dark:text-white">Enter Coordinates</h2>
-        <button onClick={onBack} className="p-2 bg-gray-100 dark:bg-slate-800 rounded-xl text-gray-400 hover:text-violet-500 dark:hover:text-violet-400 transition-colors"><ArrowLeft size={18} /></button>
-      </div>
-      <p className="text-xs text-gray-400 dark:text-slate-500">Paste coordinates in decimal format, e.g. <span className="font-mono">49.1950, 16.6068</span></p>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Latitude</label>
-          <input
-            value={latVal}
-            onChange={e => { setLatVal(e.target.value); setError(''); }}
-            placeholder="49.1950"
-            className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl outline-none font-mono text-sm border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-violet-500"
-          />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Longitude</label>
-          <input
-            value={lngVal}
-            onChange={e => { setLngVal(e.target.value); setError(''); }}
-            placeholder="16.6068"
-            className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl outline-none font-mono text-sm border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-violet-500"
-          />
-        </div>
-      </div>
-      {error && <p className="text-xs text-red-500 dark:text-red-400 text-center">{error}</p>}
-      <button onClick={handleSubmit} className="w-full py-4 bg-violet-600 text-white rounded-2xl font-semibold text-sm hover:bg-violet-700 active:scale-95 transition-all">
-        Continue
-      </button>
-    </div>
-  );
-};
-
-const SpotForm = ({ onSubmit, initialData, isSubmitting, submitError }: { onSubmit: (data: any, cats: CategoryType[], img: string | null) => void, initialData?: Spot | null, isSubmitting?: boolean, submitError?: string }) => {
-  const [cats, setCats] = useState<CategoryType[]>(initialData?.categories || []);
-  const [img, setImg] = useState<string | null>(initialData?.image || null);
-  const [error, setError] = useState('');
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-10">
-      <div className="space-y-5">
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Spot name *</label>
-          <input id="f-name" defaultValue={initialData?.name} placeholder="e.g. Rooftop at Sunset…" className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl outline-none font-medium text-sm border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500" />
-        </div>
-
-        <div className="space-y-2">
-          <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Category * <span className="font-normal text-gray-400 dark:text-slate-500">(pick one or more)</span></label>
-          <div className="grid grid-cols-2 gap-2">
-            {CATEGORIES.map(c => (
-              <button
-                key={c.label}
-                type="button"
-                onClick={() => setCats(p => p.includes(c.label) ? p.filter(x => x !== c.label) : [...p, c.label])}
-                className={`px-3 py-2.5 rounded-xl text-xs font-medium transition-all flex items-center gap-2 border ${cats.includes(c.label) ? 'bg-emerald-600 text-white border-emerald-500' : 'bg-white dark:bg-slate-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-slate-700 hover:border-emerald-300 dark:hover:border-emerald-700'}`}
-              >
-                <span className={cats.includes(c.label) ? 'text-white' : 'text-emerald-500'}>{c.icon}</span>
-                <span className="truncate">{c.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="space-y-5">
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Cover photo</label>
-          <button onClick={() => fileRef.current?.click()} type="button" className="w-full h-32 md:h-40 bg-gray-50 dark:bg-slate-800 rounded-2xl flex flex-col items-center justify-center border-2 border-dashed border-gray-200 dark:border-slate-700 text-gray-300 dark:text-slate-600 hover:text-emerald-500 hover:border-emerald-400 dark:hover:border-emerald-600 transition-all overflow-hidden relative">
-            {img ? (
-              <img src={img} className="w-full h-full object-cover" />
-            ) : <><Camera size={28} /><span className="text-xs font-medium mt-2 text-gray-400 dark:text-slate-500">Tap to add a photo</span></>}
-          </button>
-          <input type="file" hidden ref={fileRef} accept="image/*" onChange={e => {
-            const f = e.target.files?.[0];
-            if(f) { const r = new FileReader(); r.onloadend = () => compressImage(r.result as string).then(setImg); r.readAsDataURL(f); }
-          }} />
-        </div>
-
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-gray-500 dark:text-slate-400 ml-1">Description</label>
-          <textarea id="f-desc" defaultValue={initialData?.description} placeholder="Best time to visit, how to get there, vibes…" className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl outline-none text-sm h-24 md:h-32 resize-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500" />
-        </div>
-      </div>
-
-      <div className="lg:col-span-2 pt-2">
-        {(error || submitError) && <p className="text-xs text-red-500 dark:text-red-400 text-center mb-3">{error || submitError}</p>}
-        <button disabled={isSubmitting} onClick={(e) => {
-          e.stopPropagation();
-          const n = (document.getElementById('f-name') as HTMLInputElement).value;
-          const d = (document.getElementById('f-desc') as HTMLTextAreaElement).value;
-          if(!n || cats.length === 0) {
-            setError('Please add a name and at least one category.');
-            return;
-          }
-          setError('');
-          onSubmit({ name: n, description: d }, cats, img);
-        }} className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-semibold text-sm hover:bg-emerald-700 active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:active:scale-100">
-          {isSubmitting ? 'Saving…' : (initialData ? 'Save changes' : 'Add this spot')}
-        </button>
-      </div>
     </div>
   );
 };

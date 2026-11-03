@@ -37,6 +37,7 @@ CONVERSATION_LOG.txt
 *.sln
 *.sw?
 *.txt
+!public/robots.txt
 app-meta.json
 
 # Internal agent files — never in the public repo (workspace rule N2)
