@@ -45,6 +45,7 @@ import {
   EyeOff,
   Sparkles,
   Lock,
+  Flag,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -110,6 +111,39 @@ const writeLocal = (key: string, value: unknown) => {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage full or blocked */ }
 };
 
+const CATEGORY_LABELS = new Set<string>(CATEGORIES.map(c => c.label));
+
+// Firestore data is written by anyone; drop malformed values so one bad
+// document cannot crash rendering for every visitor.
+const normalizeSpot = (raw: Record<string, unknown> & { id: string }): Spot => {
+  const spot = raw as unknown as Spot;
+  return {
+    ...spot,
+    name: typeof spot.name === 'string' ? spot.name : '',
+    description: typeof spot.description === 'string' ? spot.description : '',
+    categories: Array.isArray(spot.categories)
+      ? spot.categories.filter((c): c is CategoryType => typeof c === 'string' && CATEGORY_LABELS.has(c))
+      : [],
+    reviews: Array.isArray(spot.reviews)
+      ? spot.reviews.filter(r => r && typeof r === 'object' && typeof r.comment === 'string' && typeof r.rating === 'number')
+      : [],
+  };
+};
+
+const timeAgo = (iso: string) => {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? '' : formatDistanceToNow(date, { addSuffix: true });
+};
+
+const REPO_ISSUES_URL = 'https://github.com/sokiicz/SpekPlatz/issues';
+const reportUrl = (spot: Spot) => {
+  const params = new URLSearchParams({
+    title: `Report: ${spot.name}`.slice(0, 120),
+    body: `Spot: ${spot.name}\nSpot ID: ${spot.id}\n\nWhat is wrong (illegal content, private property, a dangerous place, someone's privacy, other):\n`,
+  });
+  return `${REPO_ISSUES_URL}/new?${params}`;
+};
+
 const createCustomIcon = (categories: CategoryType[]) => {
   const primaryCat = categories[0] || 'Other';
   const cat = CATEGORIES.find(c => c.label === primaryCat) || CATEGORIES[CATEGORIES.length - 1];
@@ -137,7 +171,7 @@ const createCustomIcon = (categories: CategoryType[]) => {
 
 // Cache icons so createCustomIcon isn't called on every render
 const iconCache = new Map<string, L.DivIcon>();
-const getCachedIcon = (cats: CategoryType[]): L.DivIcon => {
+const getCachedIcon = (cats: CategoryType[] = []): L.DivIcon => {
   const key = [...cats].sort().join(',') || 'Other';
   if (!iconCache.has(key)) iconCache.set(key, createCustomIcon(cats));
   return iconCache.get(key)!;
@@ -172,12 +206,13 @@ const MapController = ({
 
   useMapEvents({
     moveend: (e) => onViewportChange(e.target.getBounds()),
-    click: (e) => onMapClick(e.latlng.lat, e.latlng.lng),
+    // wrap(): after panning across the antimeridian Leaflet reports lng outside −180…180.
+    click: (e) => { const p = e.latlng.wrap(); onMapClick(p.lat, p.lng); },
     dragstart: () => onDragStart(),
     locationfound: (e) => onLocationFound(e.latlng.lat, e.latlng.lng),
     locationerror: () => onLocationError(),
     // Right click on desktop, long press on Android.
-    contextmenu: (e) => fireLongPress(e.latlng.lat, e.latlng.lng),
+    contextmenu: (e) => { const p = e.latlng.wrap(); fireLongPress(p.lat, p.lng); },
   });
 
   // Leaflet has no touch long-press event (iOS fires no contextmenu), so track it on the container.
@@ -194,7 +229,7 @@ const MapController = ({
       timer = window.setTimeout(() => {
         if (!start) return;
         const rect = el.getBoundingClientRect();
-        const latlng = map.containerPointToLatLng([start.x - rect.left, start.y - rect.top]);
+        const latlng = map.containerPointToLatLng([start.x - rect.left, start.y - rect.top]).wrap();
         cancel();
         fireLongPress(latlng.lat, latlng.lng);
       }, 650);
@@ -294,15 +329,13 @@ const App: React.FC = () => {
     toastTimer.current = window.setTimeout(() => setToast(null), 4500);
   }, []);
 
-  // Restore auth session via Firebase Auth. Visitors without an account get an
-  // anonymous Firebase session so the server can tell who owns which spot.
-  // If the Anonymous provider is disabled in the console, they stay signed out.
+  // Restore auth session via Firebase Auth. Anonymous sessions are created lazily
+  // on the first write (see ensureSession), never just for visiting.
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       setAuthUid(firebaseUser?.uid ?? null);
       if (!firebaseUser) {
         setCurrentUser(null);
-        signInAnonymously(auth).catch(err => console.info('Anonymous session unavailable:', errorCode(err)));
         return;
       }
       if (firebaseUser.isAnonymous) {
@@ -332,7 +365,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const q = query(collection(db, 'spots'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const dbSpots = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Spot));
+      const dbSpots = snapshot.docs.map(d => normalizeSpot({ ...d.data(), id: d.id }));
       // Firestore versions override public spots (allows admins to move/edit hardcoded spots)
       const merged = PUBLIC_SPOTS.map(ps => dbSpots.find(s => s.id === ps.id) || ps);
       dbSpots.forEach(s => { if (!merged.find(p => p.id === s.id)) merged.push(s); });
@@ -569,11 +602,11 @@ const App: React.FC = () => {
   const handleAddSpot = async (data: SpotFormData, categories: CategoryType[], image: string | null) => {
     if (!showAddModal || !data.name || categories.length === 0) return;
 
-    // Server-verifiable owner when a Firebase session exists; legacy anon id otherwise.
-    const creatorId = auth.currentUser?.uid || `anon-${randomId(8)}`;
     setIsAddingSpot(true);
     setAddSpotError('');
     try {
+      // Server-verifiable owner when a Firebase session exists; legacy anon id otherwise.
+      const creatorId = (await ensureSession()) || `anon-${randomId(8)}`;
       const docRef = await addDoc(collection(db, 'spots'), {
         name: data.name,
         description: data.description,
@@ -598,6 +631,18 @@ const App: React.FC = () => {
     }
   };
 
+  // Anonymous session on first write, so owners can later edit their spots.
+  // Returns null when the Anonymous provider is disabled in the console.
+  const ensureSession = async (): Promise<string | null> => {
+    if (auth.currentUser) return auth.currentUser.uid;
+    try {
+      return (await signInAnonymously(auth)).user.uid;
+    } catch (err) {
+      console.info('Anonymous session unavailable:', errorCode(err));
+      return null;
+    }
+  };
+
   const handleReviewImage = async (file?: File) => {
     if (!file) return;
     try {
@@ -611,18 +656,18 @@ const App: React.FC = () => {
     const comment = reviewText.trim();
     if (!comment || isSubmittingReview) return;
     const authorName = (currentUser?.name || anonName.trim() || 'Anonymous Explorer').slice(0, NAME_MAX);
-    // Firestore rejects `undefined` values, so optional fields are added only when set.
-    const newReview: Review = {
-      id: randomId(),
-      userId: auth.currentUser?.uid || 'anon',
-      userName: authorName,
-      rating: reviewRating,
-      comment: comment.slice(0, REVIEW_MAX),
-      date: new Date().toISOString(),
-      ...(reviewImage ? { image: reviewImage } : {}),
-    };
     setIsSubmittingReview(true);
     try {
+      // Firestore rejects `undefined` values, so optional fields are added only when set.
+      const newReview: Review = {
+        id: randomId(),
+        userId: (await ensureSession()) || 'anon',
+        userName: authorName,
+        rating: reviewRating,
+        comment: comment.slice(0, REVIEW_MAX),
+        date: new Date().toISOString(),
+        ...(reviewImage ? { image: reviewImage } : {}),
+      };
       // One write: the review, plus the review photo as cover if the spot has none.
       await updateDoc(doc(db, 'spots', spot.id), {
         reviews: arrayUnion(newReview),
@@ -691,9 +736,13 @@ const App: React.FC = () => {
         setSignupAvatar(AVATAR_OPTIONS[0]);
       } else {
         const cred = await signInWithEmailAndPassword(auth, email, password);
-        const userDoc = await getDoc(doc(db, 'users', cred.user.uid));
-        if (!userDoc.exists()) { setAuthError('Account not found'); return; }
-        const userData = userDoc.data();
+        const userRef = doc(db, 'users', cred.user.uid);
+        const userDoc = await getDoc(userRef);
+        // Recreate a profile lost to an interrupted signup instead of locking the account out.
+        const userData = userDoc.exists()
+          ? userDoc.data()
+          : { name: nickname, avatar: AVATAR_OPTIONS[0], savedSpotIds: [] as string[] };
+        if (!userDoc.exists()) await setDoc(userRef, userData);
         // Merge locally saved spots
         const localSaved = takeLocalSaved();
         const userSaved: string[] = userData.savedSpotIds || [];
@@ -852,6 +901,13 @@ const App: React.FC = () => {
               <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed whitespace-pre-line break-words">
                 {selectedSpot.description || "No description yet — be the first to explore and share your experience!"}
               </p>
+              <a
+                href={reportUrl(selectedSpot)}
+                target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 text-[11px] text-gray-400 dark:text-slate-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+              >
+                <Flag size={12} /> Report this spot
+              </a>
             </div>
             
             <div className="pt-6 border-t border-gray-100 dark:border-gray-800 space-y-6">
@@ -876,7 +932,7 @@ const App: React.FC = () => {
                           </div>
                         </div>
                       </div>
-                      <span className="text-[10px] text-gray-400 dark:text-slate-500">{formatDistanceToNow(new Date(rev.date), { addSuffix: true })}</span>
+                      <span className="text-[10px] text-gray-400 dark:text-slate-500">{timeAgo(rev.date)}</span>
                     </div>
                     <p className="text-[11px] md:text-xs text-gray-600 dark:text-gray-400 italic leading-relaxed whitespace-pre-line break-words">"{rev.comment}"</p>
                     {revImg && <img src={revImg} loading="lazy" className="mt-2 w-full h-32 object-cover rounded-xl cursor-zoom-in" alt={`Photo by ${rev.userName}`} onClick={() => setLightboxImage(revImg)} />}
@@ -1461,6 +1517,12 @@ const App: React.FC = () => {
                       {isAuthSubmitting ? 'Signing in…' : 'Sign in'}
                     </button>
                   </form>
+                  <p className="mt-3 text-center text-[11px] text-slate-400">
+                    See our{' '}
+                    <button type="button" onClick={() => setShowLegalModal('terms')} className="underline hover:text-slate-200">Terms</button>
+                    {' '}and{' '}
+                    <button type="button" onClick={() => setShowLegalModal('privacy')} className="underline hover:text-slate-200">Privacy Policy</button>.
+                  </p>
                   <p className="mt-5 text-center text-xs text-slate-500">
                     New to SpekPlatz?{' '}
                     <button onClick={() => { setShowAuthModal('signup'); setAuthError(''); }} className="text-emerald-400 hover:underline font-medium">Create account</button>
@@ -1523,6 +1585,12 @@ const App: React.FC = () => {
                       {isAuthSubmitting ? 'Creating…' : 'Create account'}
                     </button>
                   </form>
+                  <p className="mt-3 text-center text-[11px] text-gray-500 dark:text-slate-400">
+                    By creating an account you confirm you are at least 16 and agree to the{' '}
+                    <button type="button" onClick={() => setShowLegalModal('terms')} className="underline hover:text-emerald-600 dark:hover:text-emerald-400">Terms</button>
+                    {' '}and{' '}
+                    <button type="button" onClick={() => setShowLegalModal('privacy')} className="underline hover:text-emerald-600 dark:hover:text-emerald-400">Privacy Policy</button>.
+                  </p>
                   <p className="mt-5 text-center text-xs text-gray-400 dark:text-slate-500">
                     Already have one?{' '}
                     <button onClick={() => { setShowAuthModal('login'); setAuthError(''); setShowSignupPassword(false); }} className="text-blue-600 dark:text-blue-400 hover:underline font-medium">Sign in</button>
@@ -1590,7 +1658,7 @@ const App: React.FC = () => {
                   </div>
                 </form>
               ) : (
-                <button onClick={() => { setConfirmDeleteAccount(true); setProfileError(''); }} className="w-full mt-3 text-[11px] text-gray-400 hover:text-red-500 transition-colors">
+                <button onClick={() => { setConfirmDeleteAccount(true); setProfileError(''); }} className="w-full mt-3 py-2 text-xs font-medium text-red-600 dark:text-red-400 underline underline-offset-2 hover:text-red-700 dark:hover:text-red-300 transition-colors">
                   Delete account
                 </button>
               )}
