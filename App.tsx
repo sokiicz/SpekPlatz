@@ -101,6 +101,10 @@ const LOCAL_SAVED_KEY = 'spekplatz_local_saved';
 const THEME_KEY = 'spekplatz_theme';
 const REVIEW_MAX = 1000;
 const NAME_MAX = 40;
+const CONTACT_EMAIL = 'contactme@resonantlabs.online';
+
+// Cut to max UTF-16 units without leaving half of an emoji (a lone surrogate breaks encodeURIComponent).
+const clip = (s: string, max: number) => s.slice(0, max).replace(/[\uD800-\uDBFF]$/, '');
 
 const AVATAR_SEEDS = ['maple', 'luna', 'pixel', 'nova', 'river', 'echo', 'sage', 'atlas', 'felix', 'mochi', 'zara', 'indigo'];
 const AVATAR_OPTIONS = AVATAR_SEEDS.map(s => `https://api.dicebear.com/7.x/avataaars/svg?seed=${s}`);
@@ -287,6 +291,7 @@ const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   // Firebase uid of whoever is signed in, including anonymous sessions — the server-side owner id.
   const [authUid, setAuthUid] = useState<string | null>(null);
+  const [isAnonSession, setIsAnonSession] = useState(false);
   const [settings, setSettings] = useState<MapSettings>(() => ({
     mode: 'streets',
     theme: readJson<'light' | 'dark' | null>(THEME_KEY, null)
@@ -348,6 +353,7 @@ const App: React.FC = () => {
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (firebaseUser) => {
       setAuthUid(firebaseUser?.uid ?? null);
+      setIsAnonSession(!!firebaseUser?.isAnonymous);
       if (!firebaseUser) {
         setCurrentUser(null);
         return;
@@ -458,7 +464,7 @@ const App: React.FC = () => {
   const isAdmin = isAdminName(currentUser?.name);
   const canManageSpot = (spot: Spot) => isAdmin || (!!authUid && spot.createdBy === authUid);
   // Spots owned by the current anonymous session; signing in (not signing up) would orphan them.
-  const anonSpotCount = !currentUser && authUid ? spots.filter(s => s.createdBy === authUid).length : 0;
+  const anonSpotCount = isAnonSession && authUid ? spots.filter(s => s.createdBy === authUid).length : 0;
 
   // Map markers show all spots matching filters (never filtered by viewport)
   const mapMarkerSpots = useMemo(() => {
@@ -676,7 +682,7 @@ const App: React.FC = () => {
   const handleAddReview = async (spot: Spot) => {
     const comment = reviewText.trim();
     if (!comment || isSubmittingReview) return;
-    const authorName = (currentUser?.name || anonName.trim() || 'Anonymous Explorer').slice(0, NAME_MAX);
+    const authorName = clip(currentUser?.name || anonName.trim() || 'Anonymous Explorer', NAME_MAX);
     setIsSubmittingReview(true);
     try {
       const userId = await ensureSession();
@@ -690,7 +696,7 @@ const App: React.FC = () => {
         userId,
         userName: authorName,
         rating: reviewRating,
-        comment: comment.slice(0, REVIEW_MAX),
+        comment: clip(comment, REVIEW_MAX),
         date: new Date().toISOString(),
         ...(reviewImage ? { image: reviewImage } : {}),
       };
@@ -776,7 +782,7 @@ const App: React.FC = () => {
           // Signed in but without a usable profile: do not leave a half-signed-in session behind.
           console.error('Profile load failed:', profileErr);
           await signOut(auth);
-          setAuthError('Signed in, but your profile could not be loaded. Try again later.');
+          setAuthError('Your profile could not be loaded, so you were signed out again. Try again later.');
           return;
         }
         // Merge locally saved spots
@@ -944,13 +950,22 @@ const App: React.FC = () => {
               <p className="text-gray-600 dark:text-gray-400 text-sm leading-relaxed whitespace-pre-line break-words">
                 {selectedSpot.description || "No description yet — be the first to explore and share your experience!"}
               </p>
-              <a
-                href={reportUrl(selectedSpot)}
-                target="_blank" rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs text-gray-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
-              >
-                <Flag size={12} /> Report this spot
-              </a>
+              <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600 dark:text-slate-400">
+                <a
+                  href={reportUrl(selectedSpot)}
+                  target="_blank" rel="noopener noreferrer"
+                  title="Opens a public issue on GitHub (needs a free GitHub account)"
+                  className="inline-flex items-center gap-1.5 hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                >
+                  <Flag size={12} /> Report this spot
+                </a>
+                <a
+                  href={`mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(`Report: ${clip(selectedSpot.name, 120)} (${selectedSpot.id})`)}`}
+                  className="underline hover:text-red-600 dark:hover:text-red-400 transition-colors"
+                >
+                  Report privately
+                </a>
+              </p>
             </div>
             
             <div className="pt-6 border-t border-gray-100 dark:border-gray-800 space-y-6">
@@ -1557,7 +1572,7 @@ const App: React.FC = () => {
                     />
                     {anonSpotCount > 0 && (
                       <p className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">
-                        You added {anonSpotCount === 1 ? 'a spot' : `${anonSpotCount} spots`} without an account. Signing in to an existing account means you can no longer edit {anonSpotCount === 1 ? 'it' : 'them'}. To keep {anonSpotCount === 1 ? 'it' : 'them'}, create a new account instead.
+                        You added {anonSpotCount === 1 ? 'a spot' : `${anonSpotCount} spots`} without an account. Signing in to an existing account means you can no longer edit {anonSpotCount === 1 ? 'it' : 'them'} (only on request via {CONTACT_EMAIL}). To keep {anonSpotCount === 1 ? 'it' : 'them'}, create a new account instead.
                       </p>
                     )}
                     {authError && <p role="alert" className="text-xs text-red-400 text-center">{authError}</p>}
