@@ -5,6 +5,7 @@ import { X } from 'lucide-react';
 export type LegalTab = 'terms' | 'privacy';
 
 const ISSUES_URL = 'https://github.com/sokiicz/SpekPlatz/issues';
+const CONTACT_EMAIL = 'contactme@resonantlabs.online';
 
 const Heading = ({ children }: { children: React.ReactNode }) => (
   <p className="font-medium text-gray-700 dark:text-gray-300">{children}</p>
@@ -35,7 +36,7 @@ const LegalModal = ({ tab, onTabChange, onClose }: { tab: LegalTab; onTabChange:
             <p>You are responsible for all content you submit. Do not post illegal content, private property locations without permission, dangerous or restricted areas, or content that violates others' privacy.</p>
             <p>You keep the rights to the photos and texts you post. By posting them, you allow SpekPlatz to show them publicly in the app.</p>
             <Heading>Reporting</Heading>
-            <p>To report a spot, photo or review (illegal content, private property, a dangerous place, someone's privacy), use "Report this spot" in the spot detail or open an issue at <ExternalLink href={ISSUES_URL}>github.com/sokiicz/SpekPlatz/issues</ExternalLink> with the spot name. We review reports and remove what breaks these terms.</p>
+            <p>To report a spot, photo or review (illegal content, private property, a dangerous place, someone's privacy), use "Report this spot" in the spot detail or open an issue at <ExternalLink href={ISSUES_URL}>github.com/sokiicz/SpekPlatz/issues</ExternalLink> with the spot name. Opening an issue needs a free GitHub account, and issues are public. To report privately, email <ExternalLink href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</ExternalLink>. We review reports and remove what breaks these terms.</p>
             <Heading>Liability</Heading>
             <p>SpekPlatz is not responsible for the accuracy of user-submitted locations, safety conditions at any spot, or any harm arising from visiting spots listed on the platform. Always use your own judgment and respect local laws.</p>
             <Heading>Your Account</Heading>
@@ -51,19 +52,19 @@ const LegalModal = ({ tab, onTabChange, onClose }: { tab: LegalTab; onTabChange:
             <Heading>What We Collect</Heading>
             <p>When you create an account: your chosen nickname, avatar and the spots you save. Your password is handled by Firebase Authentication (Google) and is stored only in hashed form — we never see it. When you add spots or reviews: the content you submit, including any photos. Photos are resized and re-encoded in your browser before upload, which removes embedded metadata such as GPS coordinates. Photos uploaded before November 2026 may still contain metadata; contact us to have them removed.</p>
             <p>Spots, reviews, photos and the nickname shown with them are public: anyone can see them, with or without an account.</p>
-            <p>If you add a spot or review without an account, Firebase creates an anonymous session ID in your browser so that you can edit spots you added from it.</p>
+            <p>If you add a spot or review without an account, Firebase creates an anonymous session ID in your browser so that you can edit spots you added from it. If you later create an account in the same browser, those spots move to it. If you sign in to an existing account instead, or clear your browser data, you can no longer edit them from the app; contact us to change or remove them. Spots added without an account before November 2026 cannot be edited from the app either.</p>
             <p>Your location is used in your browser to show where you are on the map and your distance to spots; it is not sent to us. If you choose "Use my location" when adding a spot, those coordinates are saved as the spot's position and are visible to everyone.</p>
             <Heading>How We Use It</Heading>
             <p>Your data is used solely to operate the SpekPlatz platform — displaying spots, reviews, and personalising your saved spots. We do not sell your data and do not share it for advertising. We do not use analytics or advertising trackers.</p>
             <Heading>Third-party Services</Heading>
             <p>To show the app, your browser loads content directly from these services, which see your IP address: Google Firebase (database and sign-in), OpenStreetMap (street map), Mapy.com (tourist map), Esri (satellite map) and DiceBear (avatars; it also receives the nickname shown next to a review, because the picture is generated from it).</p>
-            <p>Links to other sites (Google Maps directions, Buy Me a Coffee, Mapy.com, Resonant Labs) are governed by their own policies.</p>
+            <p>Links to other sites (Google Maps directions, GitHub for reports, Buy Me a Coffee, Mapy.com, Resonant Labs) are governed by their own policies.</p>
             <Heading>Data Storage</Heading>
             <p>Data is stored in Google Firebase (Firestore). Your session and preferences are stored locally in your browser. Photos are stored inside Firestore documents.</p>
             <Heading>Your Rights</Heading>
-            <p>You can delete your account at any time from your profile. Deleting your account removes your login and profile (nickname, avatar, saved spots). Spots and reviews you posted stay on the map, so delete your spots first if you want them gone. If you can no longer sign in (or cleared your browser data), contact us and we will remove them. Reviews can be removed on request.</p>
+            <p>You can delete your account at any time from your profile. Deleting your account removes your login and profile (nickname, avatar, saved spots). Spots and reviews you posted stay on the map, and your nickname stays on the reviews you wrote, so delete your spots first if you want them gone. If you can no longer sign in (or cleared your browser data), contact us and we will remove them. Reviews can be removed on request.</p>
             <Heading>Contact</Heading>
-            <p>SpekPlatz is run by Resonant Labs. For privacy questions and removal requests, open an issue at <ExternalLink href={ISSUES_URL}>github.com/sokiicz/SpekPlatz/issues</ExternalLink>. Issues are public, so please don't include personal details beyond what we need to find the content.</p>
+            <p>SpekPlatz is run by Resonant Labs. For privacy questions and removal requests, email <ExternalLink href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</ExternalLink> or open an issue at <ExternalLink href={ISSUES_URL}>github.com/sokiicz/SpekPlatz/issues</ExternalLink>. Opening an issue needs a free GitHub account. Issues are public, so please don't include personal details beyond what we need to find the content; use email for anything private.</p>
           </>
         )}
       </div>

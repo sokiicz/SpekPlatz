@@ -106,6 +106,7 @@ const AVATAR_SEEDS = ['maple', 'luna', 'pixel', 'nova', 'river', 'echo', 'sage',
 const AVATAR_OPTIONS = AVATAR_SEEDS.map(s => `https://api.dicebear.com/7.x/avataaars/svg?seed=${s}`);
 
 const errorCode = (err: unknown) => err instanceof FirebaseError ? err.code : '';
+const SESSION_ERROR = 'Could not connect to SpekPlatz. Check your connection and try again.';
 
 const writeLocal = (key: string, value: unknown) => {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage full or blocked */ }
@@ -113,19 +114,32 @@ const writeLocal = (key: string, value: unknown) => {
 
 const CATEGORY_LABELS = new Set<string>(CATEGORIES.map(c => c.label));
 
+const inRange = (v: unknown, limit: number): v is number =>
+  typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= limit;
+
 // Firestore data is written by anyone; drop malformed values so one bad
-// document cannot crash rendering for every visitor.
-const normalizeSpot = (raw: Record<string, unknown> & { id: string }): Spot => {
+// document cannot crash rendering for every visitor. Spots without a valid
+// position are dropped entirely (Leaflet throws on them).
+const normalizeSpot = (raw: Record<string, unknown> & { id: string }): Spot | null => {
   const spot = raw as unknown as Spot;
+  if (!inRange(spot.lat, 90) || !inRange(spot.lng, 180)) return null;
   return {
     ...spot,
     name: typeof spot.name === 'string' ? spot.name : '',
     description: typeof spot.description === 'string' ? spot.description : '',
+    createdAt: typeof spot.createdAt === 'string' ? spot.createdAt : '',
     categories: Array.isArray(spot.categories)
       ? spot.categories.filter((c): c is CategoryType => typeof c === 'string' && CATEGORY_LABELS.has(c))
       : [],
     reviews: Array.isArray(spot.reviews)
-      ? spot.reviews.filter(r => r && typeof r === 'object' && typeof r.comment === 'string' && typeof r.rating === 'number')
+      ? spot.reviews
+          .filter(r => r && typeof r === 'object' && typeof r.comment === 'string' && typeof r.rating === 'number')
+          .map((r, i) => ({
+            ...r,
+            id: typeof r.id === 'string' ? r.id : `review-${i}`,
+            userName: typeof r.userName === 'string' ? r.userName : 'Anonymous Explorer',
+            date: typeof r.date === 'string' ? r.date : '',
+          }))
       : [],
   };
 };
@@ -139,7 +153,7 @@ const REPO_ISSUES_URL = 'https://github.com/sokiicz/SpekPlatz/issues';
 const reportUrl = (spot: Spot) => {
   const params = new URLSearchParams({
     title: `Report: ${spot.name}`.slice(0, 120),
-    body: `Spot: ${spot.name}\nSpot ID: ${spot.id}\n\nWhat is wrong (illegal content, private property, a dangerous place, someone's privacy, other):\n`,
+    body: `Spot: ${spot.name.slice(0, 200)}\nSpot ID: ${spot.id}\n\nWhat is wrong (illegal content, private property, a dangerous place, someone's privacy, other):\n`,
   });
   return `${REPO_ISSUES_URL}/new?${params}`;
 };
@@ -365,7 +379,9 @@ const App: React.FC = () => {
   useEffect(() => {
     const q = query(collection(db, 'spots'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      const dbSpots = snapshot.docs.map(d => normalizeSpot({ ...d.data(), id: d.id }));
+      const dbSpots = snapshot.docs
+        .map(d => normalizeSpot({ ...d.data(), id: d.id }))
+        .filter((s): s is Spot => s !== null);
       // Firestore versions override public spots (allows admins to move/edit hardcoded spots)
       const merged = PUBLIC_SPOTS.map(ps => dbSpots.find(s => s.id === ps.id) || ps);
       dbSpots.forEach(s => { if (!merged.find(p => p.id === s.id)) merged.push(s); });
@@ -441,6 +457,8 @@ const App: React.FC = () => {
 
   const isAdmin = isAdminName(currentUser?.name);
   const canManageSpot = (spot: Spot) => isAdmin || (!!authUid && spot.createdBy === authUid);
+  // Spots owned by the current anonymous session; signing in (not signing up) would orphan them.
+  const anonSpotCount = !currentUser && authUid ? spots.filter(s => s.createdBy === authUid).length : 0;
 
   // Map markers show all spots matching filters (never filtered by viewport)
   const mapMarkerSpots = useMemo(() => {
@@ -605,8 +623,11 @@ const App: React.FC = () => {
     setIsAddingSpot(true);
     setAddSpotError('');
     try {
-      // Server-verifiable owner when a Firebase session exists; legacy anon id otherwise.
-      const creatorId = (await ensureSession()) || `anon-${randomId(8)}`;
+      const creatorId = await ensureSession();
+      if (!creatorId) {
+        setAddSpotError(SESSION_ERROR);
+        return;
+      }
       const docRef = await addDoc(collection(db, 'spots'), {
         name: data.name,
         description: data.description,
@@ -632,7 +653,7 @@ const App: React.FC = () => {
   };
 
   // Anonymous session on first write, so owners can later edit their spots.
-  // Returns null when the Anonymous provider is disabled in the console.
+  // Every write needs a session (Firestore rules); null means none could be started.
   const ensureSession = async (): Promise<string | null> => {
     if (auth.currentUser) return auth.currentUser.uid;
     try {
@@ -658,10 +679,15 @@ const App: React.FC = () => {
     const authorName = (currentUser?.name || anonName.trim() || 'Anonymous Explorer').slice(0, NAME_MAX);
     setIsSubmittingReview(true);
     try {
+      const userId = await ensureSession();
+      if (!userId) {
+        notify(SESSION_ERROR);
+        return;
+      }
       // Firestore rejects `undefined` values, so optional fields are added only when set.
       const newReview: Review = {
         id: randomId(),
-        userId: (await ensureSession()) || 'anon',
+        userId,
         userName: authorName,
         rating: reviewRating,
         comment: comment.slice(0, REVIEW_MAX),
@@ -737,21 +763,38 @@ const App: React.FC = () => {
       } else {
         const cred = await signInWithEmailAndPassword(auth, email, password);
         const userRef = doc(db, 'users', cred.user.uid);
-        const userDoc = await getDoc(userRef);
-        // Recreate a profile lost to an interrupted signup instead of locking the account out.
-        const userData = userDoc.exists()
-          ? userDoc.data()
-          : { name: nickname, avatar: AVATAR_OPTIONS[0], savedSpotIds: [] as string[] };
-        if (!userDoc.exists()) await setDoc(userRef, userData);
+        let userData;
+        try {
+          const userDoc = await getDoc(userRef);
+          // Recreate a profile lost to an interrupted signup instead of locking the account out.
+          // The name comes from the account email, so it matches what the rules expect.
+          userData = userDoc.exists()
+            ? userDoc.data()
+            : { name: (cred.user.email || email).split('@')[0], avatar: AVATAR_OPTIONS[0], savedSpotIds: [] as string[] };
+          if (!userDoc.exists()) await setDoc(userRef, userData);
+        } catch (profileErr) {
+          // Signed in but without a usable profile: do not leave a half-signed-in session behind.
+          console.error('Profile load failed:', profileErr);
+          await signOut(auth);
+          setAuthError('Signed in, but your profile could not be loaded. Try again later.');
+          return;
+        }
         // Merge locally saved spots
         const localSaved = takeLocalSaved();
         const userSaved: string[] = userData.savedSpotIds || [];
         const mergedSaved = Array.from(new Set([...userSaved, ...localSaved]));
+        let finalSaved = userSaved;
         if (localSaved.length > 0) {
-          await updateDoc(doc(db, 'users', cred.user.uid), { savedSpotIds: mergedSaved });
-          clearLocalSaved();
+          try {
+            await updateDoc(doc(db, 'users', cred.user.uid), { savedSpotIds: mergedSaved });
+            clearLocalSaved();
+            finalSaved = mergedSaved;
+          } catch (mergeErr) {
+            // Keep the local list for the next sign-in instead of failing the whole login.
+            console.warn('Could not merge saved spots:', mergeErr);
+          }
         }
-        setSavedSpotIds(mergedSaved);
+        setSavedSpotIds(finalSaved);
         setCurrentUser({ id: cred.user.uid, name: userData.name, avatar: userData.avatar });
         setShowAuthModal(null);
       }
@@ -904,7 +947,7 @@ const App: React.FC = () => {
               <a
                 href={reportUrl(selectedSpot)}
                 target="_blank" rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-[11px] text-gray-400 dark:text-slate-500 hover:text-red-500 dark:hover:text-red-400 transition-colors"
+                className="inline-flex items-center gap-1.5 text-xs text-gray-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 transition-colors"
               >
                 <Flag size={12} /> Report this spot
               </a>
@@ -1512,6 +1555,11 @@ const App: React.FC = () => {
                       type="password" name="password" placeholder="Password" required autoComplete="current-password"
                       className="w-full px-4 py-3 bg-slate-800 text-gray-100 placeholder-slate-500 rounded-xl font-medium outline-none border border-slate-700 focus:ring-2 focus:ring-blue-500 text-sm"
                     />
+                    {anonSpotCount > 0 && (
+                      <p className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">
+                        You added {anonSpotCount === 1 ? 'a spot' : `${anonSpotCount} spots`} without an account. Signing in to an existing account means you can no longer edit {anonSpotCount === 1 ? 'it' : 'them'}. To keep {anonSpotCount === 1 ? 'it' : 'them'}, create a new account instead.
+                      </p>
+                    )}
                     {authError && <p role="alert" className="text-xs text-red-400 text-center">{authError}</p>}
                     <button type="submit" disabled={isAuthSubmitting} className="w-full bg-blue-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-blue-700 transition-colors active:scale-95 mt-1 disabled:opacity-60">
                       {isAuthSubmitting ? 'Signing in…' : 'Sign in'}

@@ -3,7 +3,8 @@ rules_version = '2';
 // Spekplatz (named database `spekplatz`).
 // Identity comes from Firebase Auth: nickname accounts use the synthetic email
 // `<nickname>@spekplatz.local`; visitors without an account get an anonymous
-// session on their first write (when the Anonymous provider is enabled in the console).
+// session on their first write. Every write needs a session (Anonymous provider on).
+// Older spots with `createdBy: anon-…` predate sessions and only the admin can change them.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -58,7 +59,7 @@ service cloud.firestore {
         && boundedString(r.comment, 1, 1000)
         && r.rating is int && r.rating >= 1 && r.rating <= 5
         && isoDate(r.date)
-        && (signedIn() ? r.userId == request.auth.uid : r.userId == 'anon')
+        && signedIn() && r.userId == request.auth.uid
         && validImage(r, 450000);
     }
 
@@ -66,7 +67,7 @@ service cloud.firestore {
       return signedIn() && resource.data.createdBy == request.auth.uid;
     }
 
-    // Anyone may append exactly one valid review, and set the cover photo if the spot has none.
+    // Any session may append exactly one valid review, and set the cover photo if the spot has none.
     function isReviewAppend() {
       let before = resource.data.reviews;
       let after = request.resource.data.reviews;
@@ -94,9 +95,8 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['name', 'description', 'categories', 'image', 'lat', 'lng', 'createdBy', 'createdAt', 'reviews', 'isSaved'])
         && request.resource.data.reviews.size() == 0
         && isoDate(request.resource.data.createdAt)
-        && (signedIn()
-            ? request.resource.data.createdBy == request.auth.uid
-            : request.resource.data.createdBy is string && request.resource.data.createdBy.matches('anon-[a-z0-9]{1,12}'))
+        && signedIn()
+        && request.resource.data.createdBy == request.auth.uid
       );
 
       allow update: if isAdmin()
