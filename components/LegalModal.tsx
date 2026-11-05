@@ -1,11 +1,12 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { X } from 'lucide-react';
+import { CONTACT_EMAIL } from '../constants';
 
 export type LegalTab = 'terms' | 'privacy';
 
 const ISSUES_URL = 'https://github.com/sokiicz/SpekPlatz/issues';
-const CONTACT_EMAIL = 'contactme@resonantlabs.online';
+const OPERATOR = 'Jan Zavadil';
 
 const Heading = ({ children }: { children: React.ReactNode }) => (
   <p className="font-medium text-gray-700 dark:text-gray-300">{children}</p>
@@ -26,8 +27,8 @@ const LegalModal = ({ tab, onTabChange, onClose }: { tab: LegalTab; onTabChange:
     <motion.div initial={{ scale: 0.95, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.95, opacity: 0, y: 20 }} className="relative w-full max-w-lg bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-gray-100 dark:border-slate-800 max-h-[85vh] overflow-y-auto no-scrollbar">
       <div className="sticky top-0 bg-white dark:bg-slate-900 px-6 pt-6 pb-4 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between">
         <div className="flex gap-2">
-          <button onClick={() => onTabChange('terms')} className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all ${tab === 'terms' ? 'bg-emerald-600 text-white' : 'text-gray-400 dark:text-slate-500 hover:text-gray-600'}`}>Terms & Conditions</button>
-          <button onClick={() => onTabChange('privacy')} className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all ${tab === 'privacy' ? 'bg-emerald-600 text-white' : 'text-gray-400 dark:text-slate-500 hover:text-gray-600'}`}>Privacy Policy</button>
+          <button onClick={() => onTabChange('terms')} aria-pressed={tab === 'terms'} className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all ${tab === 'terms' ? 'bg-emerald-700 text-white' : 'text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-200'}`}>Terms & Conditions</button>
+          <button onClick={() => onTabChange('privacy')} aria-pressed={tab === 'privacy'} className={`px-4 py-1.5 rounded-full text-xs font-semibold transition-all ${tab === 'privacy' ? 'bg-emerald-700 text-white' : 'text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-200'}`}>Privacy Policy</button>
         </div>
         <button onClick={onClose} aria-label="Close" className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"><X size={18} /></button>
       </div>
@@ -36,12 +37,12 @@ const LegalModal = ({ tab, onTabChange, onClose }: { tab: LegalTab; onTabChange:
           <>
             <p className="text-sm font-semibold text-gray-900 dark:text-white">Terms & Conditions</p>
             <p>Last updated: November 2026</p>
-            <p>By using SpekPlatz, you agree to these terms. SpekPlatz is a community platform for discovering and sharing hidden spots, run by Resonant Labs. It is provided as-is for personal, non-commercial use.</p>
+            <p>By using SpekPlatz, you agree to these terms. SpekPlatz is a community platform for discovering and sharing hidden spots, run by {OPERATOR}. It is provided as-is for personal, non-commercial use.</p>
             <Heading>Content Guidelines</Heading>
             <p>You are responsible for all content you submit. Do not post illegal content, private property locations without permission, dangerous or restricted areas, or content that violates others' privacy.</p>
             <p>You keep the rights to the photos and texts you post. By posting them, you allow SpekPlatz to show them publicly in the app.</p>
             <Heading>Reporting</Heading>
-            <p>To report a spot, photo or review (illegal content, private property, a dangerous place, someone's privacy), use "Report this spot" in the spot detail or open an issue at <ExternalLink href={ISSUES_URL}>github.com/sokiicz/SpekPlatz/issues</ExternalLink> with the spot name. Opening an issue needs a free GitHub account, and issues are public. To report privately, email <MailLink />. We review reports and remove what breaks these terms.</p>
+            <p>To report a spot, photo or review (illegal content, private property, a dangerous place, someone's privacy), use "Report on GitHub" or "Report privately" in the spot detail. "Report on GitHub" opens a public issue at <ExternalLink href={ISSUES_URL}>github.com/sokiicz/SpekPlatz/issues</ExternalLink> and needs a free GitHub account. "Report privately" opens an email to <MailLink />; you can also write to this address directly with the spot name. We review reports and remove what breaks these terms.</p>
             <Heading>Liability</Heading>
             <p>SpekPlatz is not responsible for the accuracy of user-submitted locations, safety conditions at any spot, or any harm arising from visiting spots listed on the platform. Always use your own judgment and respect local laws.</p>
             <Heading>Your Account</Heading>
@@ -55,9 +56,9 @@ const LegalModal = ({ tab, onTabChange, onClose }: { tab: LegalTab; onTabChange:
             <p>Last updated: November 2026</p>
             <p>SpekPlatz takes your privacy seriously. Here's what we collect and how we use it.</p>
             <Heading>What We Collect</Heading>
-            <p>When you create an account: your chosen nickname, avatar and the spots you save. Your password is handled by Firebase Authentication (Google) and is stored only in hashed form — we never see it. When you add spots or reviews: the content you submit, including any photos. Photos are resized and re-encoded in your browser before upload, which removes embedded metadata such as GPS coordinates. Photos uploaded before 4 November 2026 may still contain metadata; contact us to have them removed.</p>
+            <p>When you create an account: your chosen nickname, avatar and the spots you save. Your password is handled by Firebase Authentication (Google) and is stored only in hashed form — we never see it. When you add spots or reviews: the content you submit, including any photos. Photos are resized and re-encoded in your browser before upload, which removes embedded metadata such as GPS coordinates. Photos uploaded with earlier versions of the app (until 4 November 2026) may still contain metadata; contact us to have them removed.</p>
             <p>Spots, reviews, photos and the nickname shown with them are public: anyone can see them, with or without an account.</p>
-            <p>If you add a spot or review without an account, Firebase creates an anonymous session ID in your browser so that you can edit spots you added from it. If you later create an account in the same browser, those spots move to it. If you sign in to an existing account instead, or clear your browser data, you can no longer edit them from the app; contact us to change or remove them. Spots added without an account before 4 November 2026 cannot be edited from the app either.</p>
+            <p>If you add a spot or review without an account, Firebase creates an anonymous session ID in your browser so that you can edit spots you added from it. If you later create an account in the same browser, those spots move to it. If you sign in to an existing account instead, or clear your browser data, you can no longer edit them from the app; contact us to change or remove them. Spots added without an account with earlier versions of the app (until 4 November 2026) cannot be edited from the app either.</p>
             <p>Your location is used in your browser to show where you are on the map and your distance to spots; it is not sent to us. If you choose "Use my location" when adding a spot, those coordinates are saved as the spot's position and are visible to everyone.</p>
             <Heading>How We Use It</Heading>
             <p>Your data is used solely to operate the SpekPlatz platform — displaying spots, reviews, and personalising your saved spots. We do not sell your data and do not share it for advertising. We do not use analytics or advertising trackers.</p>
@@ -69,7 +70,7 @@ const LegalModal = ({ tab, onTabChange, onClose }: { tab: LegalTab; onTabChange:
             <Heading>Your Rights</Heading>
             <p>You can delete your account at any time from your profile. Deleting your account removes your login and profile (nickname, avatar, saved spots). Spots and reviews you posted stay on the map, and your nickname stays on the reviews you wrote, so delete your spots first if you want them gone. If you can no longer sign in (or cleared your browser data), contact us and we will remove them. Reviews can be removed on request.</p>
             <Heading>Contact</Heading>
-            <p>SpekPlatz is run by Resonant Labs. For privacy questions and removal requests, email <MailLink /> or open an issue at <ExternalLink href={ISSUES_URL}>github.com/sokiicz/SpekPlatz/issues</ExternalLink>. Opening an issue needs a free GitHub account. Issues are public, so please don't include personal details beyond what we need to find the content; use email for anything private.</p>
+            <p>SpekPlatz is run by {OPERATOR}. For privacy questions and removal requests, email <MailLink /> or open an issue at <ExternalLink href={ISSUES_URL}>github.com/sokiicz/SpekPlatz/issues</ExternalLink>. Opening an issue needs a free GitHub account. Issues are public, so please don't include personal details beyond what we need to find the content; use email for anything private.</p>
           </>
         )}
       </div>

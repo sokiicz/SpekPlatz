@@ -77,7 +77,7 @@ import {
 import { FirebaseError } from 'firebase/app';
 
 import { Spot, CategoryType, User, MapSettings, Review } from './types';
-import { CATEGORIES, INITIAL_CENTER, INITIAL_ZOOM } from './constants';
+import { CATEGORIES, CONTACT_EMAIL, INITIAL_CENTER, INITIAL_ZOOM } from './constants';
 import { PUBLIC_SPOTS } from './publicData';
 import { formatDistanceToNow } from 'date-fns';
 import { auth, db, isAdminName, nicknameToEmail, NICKNAME_PATTERN } from './lib/firebase';
@@ -85,6 +85,7 @@ import { getTileSource, hasMapyKey } from './lib/tiles';
 import {
   REVIEW_IMAGE,
   compressImageFile,
+  encodeText,
   formatDistance,
   getAverageRating,
   getDistance,
@@ -101,7 +102,7 @@ const LOCAL_SAVED_KEY = 'spekplatz_local_saved';
 const THEME_KEY = 'spekplatz_theme';
 const REVIEW_MAX = 1000;
 const NAME_MAX = 40;
-const CONTACT_EMAIL = 'contactme@resonantlabs.online';
+const PASSWORD_MIN = 8; // new passwords only; older accounts may still sign in with 6+
 
 // Cut to max UTF-16 units without leaving half of an emoji (a lone surrogate breaks encodeURIComponent).
 const clip = (s: string, max: number) => s.slice(0, max).replace(/[\uD800-\uDBFF]$/, '');
@@ -755,6 +756,8 @@ const App: React.FC = () => {
         const cred = anonUser
           ? await linkWithCredential(anonUser, EmailAuthProvider.credential(email, password))
           : await createUserWithEmailAndPassword(auth, email, password);
+        // Linking does not fire onAuthStateChanged, so clear the flag here.
+        setIsAnonSession(false);
         await cred.user.getIdToken(true); // Firestore rules read the email claim
         const avatar = signupAvatar;
         // Merge any locally saved spots into the new account
@@ -773,10 +776,12 @@ const App: React.FC = () => {
         try {
           const userDoc = await getDoc(userRef);
           // Recreate a profile lost to an interrupted signup instead of locking the account out.
-          // The name comes from the account email, so it matches what the rules expect.
+          // The name comes from the account email, so it matches what the rules expect;
+          // the nickname as typed keeps its capital letters when it is the same name.
+          const emailName = (cred.user.email || email).split('@')[0];
           userData = userDoc.exists()
             ? userDoc.data()
-            : { name: (cred.user.email || email).split('@')[0], avatar: AVATAR_OPTIONS[0], savedSpotIds: [] as string[] };
+            : { name: nickname.toLowerCase() === emailName ? nickname : emailName, avatar: AVATAR_OPTIONS[0], savedSpotIds: [] as string[] };
           if (!userDoc.exists()) await setDoc(userRef, userData);
         } catch (profileErr) {
           // Signed in but without a usable profile: do not leave a half-signed-in session behind.
@@ -808,7 +813,7 @@ const App: React.FC = () => {
       const code = errorCode(err);
       if (['auth/email-already-in-use', 'auth/credential-already-in-use'].includes(code)) setAuthError('Nickname already taken');
       else if (['auth/user-not-found', 'auth/wrong-password', 'auth/invalid-credential', 'auth/invalid-email'].includes(code)) setAuthError('Invalid nickname or password');
-      else if (code === 'auth/weak-password') setAuthError('Password must be at least 6 characters');
+      else if (code === 'auth/weak-password') setAuthError(`Password must be at least ${PASSWORD_MIN} characters`);
       else if (code === 'auth/too-many-requests') setAuthError('Too many attempts. Wait a moment and try again.');
       else if (code === 'auth/network-request-failed') setAuthError('No connection. Check your internet and try again.');
       else setAuthError('Authentication failed. Please try again.');
@@ -829,7 +834,7 @@ const App: React.FC = () => {
     const confirmPwd = String(formData.get('confirmPassword') || '');
 
     if (newPwd !== confirmPwd) { setProfileError('New passwords do not match'); return; }
-    if (newPwd.length < 6) { setProfileError('Password must be at least 6 characters'); return; }
+    if (newPwd.length < PASSWORD_MIN) { setProfileError(`Password must be at least ${PASSWORD_MIN} characters`); return; }
 
     const firebaseUser = auth.currentUser;
     if (!firebaseUser || !currentUser) { setProfileError('Please sign in again.'); return; }
@@ -957,10 +962,11 @@ const App: React.FC = () => {
                   title="Opens a public issue on GitHub (needs a free GitHub account)"
                   className="inline-flex items-center gap-1.5 hover:text-red-600 dark:hover:text-red-400 transition-colors"
                 >
-                  <Flag size={12} /> Report this spot
+                  <Flag size={12} /> Report on GitHub
                 </a>
                 <a
-                  href={`mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(`Report: ${clip(selectedSpot.name, 120)} (${selectedSpot.id})`)}`}
+                  href={`mailto:${CONTACT_EMAIL}?subject=${encodeText(`Report: ${clip(selectedSpot.name, 120)} (${selectedSpot.id})`)}`}
+                  title={`Opens your mail app (${CONTACT_EMAIL})`}
                   className="underline hover:text-red-600 dark:hover:text-red-400 transition-colors"
                 >
                   Report privately
@@ -1630,8 +1636,8 @@ const App: React.FC = () => {
                     <div className="relative">
                       <input
                         type={showSignupPassword ? 'text' : 'password'}
-                        name="password" placeholder="Create a password" required
-                        autoComplete="new-password" minLength={6}
+                        name="password" placeholder={`Create a password (${PASSWORD_MIN}+ characters)`} required
+                        autoComplete="new-password" minLength={PASSWORD_MIN}
                         className="w-full px-4 py-3 pr-11 bg-gray-50 dark:bg-slate-800 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm"
                       />
                       <button
@@ -1698,8 +1704,8 @@ const App: React.FC = () => {
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-slate-500 mb-3 flex items-center gap-1.5"><ShieldCheck size={13} /> Change Password</h3>
                 <input type="text" name="username" autoComplete="username" value={currentUser.name} readOnly hidden />
                 <input type="password" name="currentPassword" placeholder="Current password" required autoComplete="current-password" aria-label="Current password" className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
-                <input type="password" name="newPassword" placeholder="New password" required minLength={6} autoComplete="new-password" aria-label="New password" className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
-                <input type="password" name="confirmPassword" placeholder="Confirm new password" required minLength={6} autoComplete="new-password" aria-label="Confirm new password" className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
+                <input type="password" name="newPassword" placeholder={`New password (${PASSWORD_MIN}+ characters)`} required minLength={PASSWORD_MIN} autoComplete="new-password" aria-label="New password" className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
+                <input type="password" name="confirmPassword" placeholder="Confirm new password" required minLength={PASSWORD_MIN} autoComplete="new-password" aria-label="Confirm new password" className="w-full px-4 py-3 bg-gray-50 dark:bg-slate-800 dark:text-gray-100 dark:placeholder-slate-500 rounded-xl font-medium outline-none border border-gray-200 dark:border-slate-700 focus:ring-2 focus:ring-emerald-500 text-sm" />
                 {profileError && <p className="text-xs text-red-500 dark:text-red-400">{profileError}</p>}
                 {profileSuccess && <p className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><CheckCircle2 size={12} /> Password updated successfully</p>}
                 <button type="submit" className="w-full bg-emerald-600 text-white py-3 rounded-xl font-semibold text-sm hover:bg-emerald-700 transition-colors active:scale-95">Update password</button>

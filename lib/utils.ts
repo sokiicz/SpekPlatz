@@ -28,8 +28,19 @@ export const randomId = (length = 12) => {
   return Array.from(bytes, b => (b % 36).toString(36)).join('');
 };
 
+// Text from Firestore can hold anything. Control characters become spaces, and a lone
+// surrogate (half an emoji) is replaced, because encodeURIComponent throws on it.
+export const encodeText = (s: string) => {
+  const clean = s.replace(/[\u0000-\u001F\u007F]/g, ' ');
+  try {
+    return encodeURIComponent(clean);
+  } catch {
+    return encodeURIComponent(clean.replace(/[\uD800-\uDFFF]/g, String.fromCharCode(0xfffd)));
+  }
+};
+
 export const reviewAvatar = (review: Review) =>
-  `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(review.userName)}`;
+  `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeText(review.userName)}`;
 
 export const readJson = <T,>(key: string, fallback: T): T => {
   try {

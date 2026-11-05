@@ -31,5 +31,8 @@ export const CATEGORIES: { label: CategoryType; icon: React.ReactNode; color: st
   { label: 'Other', icon: <MoreHorizontal size={18} />, color: 'bg-slate-500' },
 ];
 
+// Private channel for reports and removal requests (shown in the app and in the legal texts).
+export const CONTACT_EMAIL = 'contactme@resonantlabs.online';
+
 export const INITIAL_CENTER: [number, number] = [50.0, 14.0]; // Central Europe (near Prague)
 export const INITIAL_ZOOM = 5; // Zoomed out to see Europe
